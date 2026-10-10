@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+*.egg-info/
+
+# Node.js
+node_modules/
+dist/
+build/
+.next/
+
+# Секреты и конфиги
+.env
+.env.local
+*.log
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+examples/

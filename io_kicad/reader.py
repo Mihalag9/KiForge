@@ -1,0 +1,257 @@
+"""Чтение .mod (PCBNEW-LibModule-V1) в модель Library."""
+from __future__ import annotations
+
+from core.footprint import Footprint, Pad, FpText, FpLine, FpCircle, FpArc
+from core.library import Library
+from .layers import parse_layer
+from .units import parse_int, units_to_mm
+
+
+def read(text: str) -> Library:
+    lines = text.splitlines()
+    lib = Library()
+    i, n = 0, len(lines)
+
+    # --- Заголовок ---
+    if i < n and lines[i].lstrip().startswith("PCBNEW-LibModule-V1"):
+        lib.header_date = lines[i].split(None, 1)[1].strip() if " " in lines[i] else ""
+        i += 1
+
+    # --- Пролог до $MODULE / $INDEX ---
+    while i < n:
+        s = lines[i].strip()
+        if s.startswith("$INDEX"):
+            i += 1
+            while i < n and not lines[i].strip().startswith("$EndINDEX"):
+                i += 1
+            if i < n: i += 1
+            continue
+        if s.startswith("$MODULE") or s.startswith("$EndLIBRARY"):
+            break
+        if s and not s.startswith("#"):
+            lib.extra_header.append(lines[i])
+        i += 1
+
+    # --- Модули ---
+    while i < n:
+        s = lines[i].strip()
+        if s.startswith("$EndLIBRARY"):
+            break
+        if s.startswith("$MODULE"):
+            fp, i = _read_module(lines, i)
+            lib.modules.append(fp)
+            continue
+        if s:
+            lib.extra_before_end.append(lines[i])
+        i += 1
+
+    return lib
+
+
+# --------------------------------------------------------------------------
+# Модуль
+# --------------------------------------------------------------------------
+
+def _read_module(lines, i):
+    parts = lines[i].strip().split(None, 1)
+    name = parts[1].strip() if len(parts) > 1 else "Module"
+    fp = Footprint(name=name)
+    i += 1
+    n = len(lines)
+
+    while i < n:
+        s = lines[i].strip()
+        if not s:
+            i += 1; continue
+        if s.startswith("$EndMODULE"):
+            return fp, i + 1
+        if s.startswith("$PAD"):
+            pad, i = _read_pad(lines, i + 1)
+            fp.pads.append(pad)
+            continue
+        _read_module_line(fp, s)
+        i += 1
+    return fp, i
+
+
+def _read_module_line(fp: Footprint, s: str) -> None:
+    parts = s.split()
+    tag = parts[0]
+    rest = parts[1:]
+
+    if tag == "Po":
+        if len(rest) >= 1: fp.po_x = parse_int(rest[0])
+        if len(rest) >= 2: fp.po_y = parse_int(rest[1])
+        if len(rest) >= 3: fp.po_rotation = parse_int(rest[2])
+        if len(rest) >= 4: fp.po_layer = parse_int(rest[3], 15)
+        if len(rest) >= 5: fp.po_tstamp = rest[4]
+        if len(rest) >= 6: fp.po_flags = rest[5]
+        if len(rest) >= 7: fp.po_misc = " ".join(rest[6:])
+    elif tag == "Li":
+        if rest: fp.name = " ".join(rest)
+    elif tag == "Sc":
+        fp.sc = " ".join(rest)
+    elif tag == "AR":
+        fp.ar = " ".join(rest)
+    elif tag == "Op":
+        fp.op = " ".join(rest)
+    elif tag in ("T0", "T1"):
+        _read_text(fp, tag, rest)
+    elif tag == "DS":
+        _read_ds(fp, rest)
+    elif tag == "DC":
+        _read_dc(fp, rest)
+    elif tag == "DA":
+        _read_da(fp, rest)
+    else:
+        fp.extra.append(s)
+
+
+def _parse_quoted(s: str):
+    """Вернуть (текст, остаток). Поддерживает \"...\" и голые слова."""
+    s = s.lstrip()
+    if s.startswith('"'):
+        buf, j = [], 1
+        while j < len(s):
+            c = s[j]
+            if c == "\\" and j + 1 < len(s):
+                buf.append(s[j + 1]); j += 2; continue
+            if c == '"':
+                return "".join(buf), s[j + 1:]
+            buf.append(c); j += 1
+        return "".join(buf), ""
+    parts = s.split(None, 1)
+    if not parts: return "", ""
+    return parts[0], parts[1] if len(parts) > 1 else ""
+
+
+def _read_text(fp, tag, rest):
+    # T0 x y w h rot thick N|M V|I layer N|I "text"
+    if len(rest) < 9:
+        fp.extra.append(f"{tag} " + " ".join(rest)); return
+    t = FpText()
+    t.kind = "reference" if tag == "T0" else "value"
+    t.x = units_to_mm(parse_int(rest[0]))
+    t.y = units_to_mm(parse_int(rest[1]))
+    t.width = units_to_mm(parse_int(rest[2]))
+    t.height = units_to_mm(parse_int(rest[3]))
+    t.rotation = float(parse_int(rest[4]))
+    t.thickness = units_to_mm(parse_int(rest[5]))
+    t.mirror = rest[6].upper() == "M"
+    t.visible = rest[7].upper() != "I"
+    t.layer = parse_layer(rest[8])
+    if len(rest) >= 10: t.italic = rest[9].upper() == "I"
+    if len(rest) >= 11:
+        txt, _ = _parse_quoted(" ".join(rest[10:]))
+        t.text = txt
+    fp.texts.append(t)
+
+
+def _read_ds(fp, rest):
+    if len(rest) < 6:
+        fp.extra.append("DS " + " ".join(rest)); return
+    ln = FpLine()
+    ln.x1 = units_to_mm(parse_int(rest[0]))
+    ln.y1 = units_to_mm(parse_int(rest[1]))
+    ln.x2 = units_to_mm(parse_int(rest[2]))
+    ln.y2 = units_to_mm(parse_int(rest[3]))
+    ln.width = units_to_mm(parse_int(rest[4]))
+    ln.layer = parse_layer(rest[5])
+    fp.lines.append(ln)
+
+
+def _read_dc(fp, rest):
+    if len(rest) < 6:
+        fp.extra.append("DC " + " ".join(rest)); return
+    c = FpCircle()
+    c.cx = units_to_mm(parse_int(rest[0]))
+    c.cy = units_to_mm(parse_int(rest[1]))
+    c.ex = units_to_mm(parse_int(rest[2]))
+    c.ey = units_to_mm(parse_int(rest[3]))
+    c.width = units_to_mm(parse_int(rest[4]))
+    c.layer = parse_layer(rest[5])
+    fp.circles.append(c)
+
+
+def _read_da(fp, rest):
+    if len(rest) < 7:
+        fp.extra.append("DA " + " ".join(rest)); return
+    a = FpArc()
+    a.cx = units_to_mm(parse_int(rest[0]))
+    a.cy = units_to_mm(parse_int(rest[1]))
+    a.sx = units_to_mm(parse_int(rest[2]))
+    a.sy = units_to_mm(parse_int(rest[3]))
+    a.angle = float(parse_int(rest[4]))
+    a.width = units_to_mm(parse_int(rest[5]))
+    a.layer = parse_layer(rest[6])
+    fp.arcs.append(a)
+
+
+# --------------------------------------------------------------------------
+# Пад
+# --------------------------------------------------------------------------
+
+def _read_pad(lines, i):
+    pad = Pad()
+    n = len(lines)
+    while i < n:
+        s = lines[i].strip()
+        if not s:
+            i += 1; continue
+        if s.startswith("$EndPAD"):
+            return pad, i + 1
+        parts = s.split(None, 1)
+        tag = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
+        if tag == "Sh":   _read_pad_sh(pad, rest)
+        elif tag == "Dr": _read_pad_dr(pad, rest)
+        elif tag == "At": _read_pad_at(pad, rest)
+        elif tag == "Ne": _read_pad_ne(pad, rest)
+        elif tag == "Po":
+            r = rest.split()
+            if len(r) >= 1: pad.x = units_to_mm(parse_int(r[0]))
+            if len(r) >= 2: pad.y = units_to_mm(parse_int(r[1]))
+        else:
+            pad.extra.append(s)
+        i += 1
+    return pad, i
+
+
+def _read_pad_sh(pad, rest):
+    name, r = _parse_quoted(rest)
+    pad.number = name
+    parts = r.split()
+    if len(parts) >= 1: pad.shape = parts[0].upper()
+    if len(parts) >= 2: pad.width = units_to_mm(parse_int(parts[1]))
+    if len(parts) >= 3: pad.height = units_to_mm(parse_int(parts[2]))
+    if len(parts) >= 4: pad.pad_dx = parse_int(parts[3])
+    if len(parts) >= 5: pad.pad_dy = parse_int(parts[4])
+    if len(parts) >= 6: pad.pad_angle = parse_int(parts[5])
+
+
+def _read_pad_dr(pad, rest):
+    parts = rest.split()
+    if not parts:
+        pad.drill = None; return
+    dx = parse_int(parts[0])
+    dy = parse_int(parts[1]) if len(parts) >= 2 else dx
+    off = parse_int(parts[2]) if len(parts) >= 3 else 0
+    if dx == 0 and dy == 0:
+        pad.drill = None; return
+    pad.drill = units_to_mm(dx)
+    pad.drill_y = units_to_mm(dy) if (dy and dy != dx) else None
+    pad.drill_offset = units_to_mm(off)
+
+
+def _read_pad_at(pad, rest):
+    parts = rest.split()
+    if len(parts) >= 1: pad.attachment = parts[0]
+    if len(parts) >= 2: pad.attach_flag = parts[1]
+    if len(parts) >= 3: pad.flags = parts[2]
+
+
+def _read_pad_ne(pad, rest):
+    parts = rest.split(None, 1)
+    if parts: pad.net = parse_int(parts[0])
+    if len(parts) > 1:
+        pad.net_name, _ = _parse_quoted(parts[1])
