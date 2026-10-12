@@ -363,7 +363,14 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
         self.setFont(font)
         fm = QFontMetricsF(font)
         cap = fm.capHeight() or 70.0
-        sc = (self.text_obj.height if self.text_obj.height > 0 else 1.0) / cap
+
+        h = self.text_obj.height if self.text_obj.height > 0 else 1.0
+        w = self.text_obj.width  if self.text_obj.width  > 0 else 1.0
+        # W и H в .mod — независимые габариты символа: KiCad растягивает
+        # глиф по обеим осям. Поэтому и мы масштабируем X и Y раздельно,
+        # а не одним общим коэффициентом из высоты.
+        sc_y = h / cap
+        sc_x = w / cap
 
         if self.text_obj.visible:
             self.setBrush(QBrush(_layer_qcolor(self.text_obj.layer)))
@@ -372,8 +379,10 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
 
         self.setPos(self.text_obj.x, self.text_obj.y)
         br = self.boundingRect(); c = br.center()
-        tr = QTransform(); tr.rotate(-self.text_obj.rotation)
-        tr.scale(sc, sc); tr.translate(-c.x(), -c.y())
+        tr = QTransform()
+        tr.rotate(-self.text_obj.rotation)
+        tr.scale(sc_x, sc_y)
+        tr.translate(-c.x(), -c.y())
         self.setTransform(tr)
 
 
