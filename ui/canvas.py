@@ -8,7 +8,8 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QPainter,
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem,
                                QGraphicsLineItem, QGraphicsPathItem,
                                QGraphicsScene, QGraphicsSimpleTextItem,
-                               QGraphicsView)
+                               QGraphicsView, QStyle,
+                               QStyleOptionGraphicsItem)
 
 from core.arc_math import arc_points_from_center
 from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
@@ -46,18 +47,24 @@ LAYER_COLORS = {
 }
 DEFAULT_LAYER_COLOR = "#b8b8b8"
 
-BG_COLOR      = QColor("#0B1220")
-GRID_COLOR    = QColor("#26324A")
+BG_COLOR       = QColor("#0B1220")
+GRID_COLOR     = QColor("#26324A")
 GRID_PEN_WIDTH = 2.4
-AXIS_COLOR    = QColor("#4d6bfe")
-PREVIEW_COLOR = QColor("#ffffff")
-PAD_NUM_COLOR = QColor("#ffffff")
-PAD_COLOR     = QColor("#c14a4a")
+AXIS_COLOR     = QColor("#4d6bfe")
+PREVIEW_COLOR  = QColor("#ffffff")
+PAD_NUM_COLOR  = QColor("#ffffff")
+PAD_COLOR      = QColor("#c14a4a")
 
 # Округление координат при свободном (без привязки) позиционировании.
 # 4 знака после запятой = 0.1 мкм — с запасом покрывает точность .mod
 # (1 unit = 0.00254 мм ≈ 5 знаков) и не даёт копить float-мусор.
 FREE_ROUND_DIGITS = 4
+
+# --- Индикатор выделения ---------------------------------------------------
+SELECTION_COLOR  = QColor("#4d6bfe")  # акцентный синий, как у осей координат
+SELECTION_PAD_MM = 1.0                # запас в boundingRect под рамку (мм)
+SELECTION_GAP_PX = 3.0                # визуальный отступ рамки (экранные пиксели)
+HANDLE_PX        = 4.0                # сторона квадратного маркера (пиксели)
 
 
 def _layer_qcolor(layer: str) -> QColor:
@@ -101,10 +108,6 @@ def _arc_path(a: FpArc) -> QPainterPath:
     return path
 
 
-# --------------------------------------------------------------------------
-# Подстановка %R / %V не нужна — .mod хранит имена как есть
-# --------------------------------------------------------------------------
-
 def _fit_pad_number(text, w, h, target_mm=1.0):
     if not text: return None
     font = QFont("Sans"); font.setPixelSize(100)
@@ -117,10 +120,88 @@ def _fit_pad_number(text, w, h, target_mm=1.0):
 
 
 # --------------------------------------------------------------------------
+# Индикатор выделения
+# --------------------------------------------------------------------------
+
+def _draw_selection(item, painter, option):
+    """Кастомный индикатор выделения: пунктир по контуру + маркеры углов.
+
+    Стандартный индикатор Qt — пунктирный прямоугольник по boundingRect() —
+    у вытянутых и тонких фигур (линия, дуга) сливается с самим элементом,
+    а у окружностей выглядит как «случайный квадрат». Здесь рамка идёт по
+    реальному видимому контуру элемента (с учётом толщины пера) с
+    постоянным визуальным отступом, а по углам нарисованы квадратные
+    маркеры. Толщина рамки и сторона маркеров задаются в экранных
+    пикселях, поэтому при любом масштабе вида выглядят одинаково.
+    """
+    if not (option.state & QStyle.StateFlag.State_Selected):
+        return
+
+    lod = option.levelOfDetailFromTransform(painter.worldTransform())
+    if lod <= 0.0:
+        return
+
+    gap = SELECTION_GAP_PX / lod
+    rect = item._content_rect().adjusted(-gap, -gap, gap, gap)
+
+    painter.save()
+
+    # Пунктирная рамка — 1 пиксель экрана независимо от зума.
+    pen = QPen(SELECTION_COLOR)
+    pen.setCosmetic(True)
+    pen.setWidthF(1.0)
+    pen.setStyle(Qt.DashLine)
+    painter.setPen(pen)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawRect(rect)
+
+    # Угловые маркеры — HANDLE_PX пикселей экрана.
+    s = HANDLE_PX / lod
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(SELECTION_COLOR)
+    for x in (rect.left(), rect.right()):
+        for y in (rect.top(), rect.bottom()):
+            painter.drawRect(QRectF(x - s / 2.0, y - s / 2.0, s, s))
+
+    painter.restore()
+
+
+class _SelectableMixin:
+    """Общая логика выделения для всех графических элементов модуля.
+
+    * ``_content_rect()`` — реальный видимый контур (с учётом пера);
+    * ``boundingRect()`` — тот же контур + запас под рамку;
+    * ``paint()`` — подавляет стандартный индикатор Qt и вызывает
+      ``_draw_selection`` для кастомного.
+    """
+
+    def _content_rect(self) -> QRectF:
+        """Границы по видимому контуру (с учётом толщины пера)."""
+        return super().boundingRect()
+
+    def boundingRect(self) -> QRectF:
+        m = SELECTION_PAD_MM
+        return self._content_rect().adjusted(-m, -m, m, m)
+
+    def paint(self, painter, option, widget=None):
+        # ВАЖНО: используем КОПИРУЮЩИЙ конструктор, а не ручное
+        # конструирование QStyleOptionGraphicsItem(). «Пустой» option в
+        # PySide6 имеет неинициализированные state/exposedRect, из-за
+        # чего базовые QGraphicsXxxItem.paint() молча ничего не рисуют.
+        # Копия наследует все поля реального option'а Qt; снимаем только
+        # флаг State_Selected, чтобы Qt не рисовал свой пунктирный
+        # прямоугольник поверх нашей кастомной рамки.
+        opt = QStyleOptionGraphicsItem(option)
+        opt.state = opt.state & ~QStyle.StateFlag.State_Selected
+        super().paint(painter, opt, widget)
+        _draw_selection(self, painter, option)
+
+
+# --------------------------------------------------------------------------
 # Редактируемые элементы
 # --------------------------------------------------------------------------
 
-class PadItem(QGraphicsPathItem):
+class PadItem(_SelectableMixin, QGraphicsPathItem):
     def __init__(self, pad: Pad):
         super().__init__()
         self.pad = pad
@@ -187,7 +268,7 @@ class PadItem(QGraphicsPathItem):
             self._number_item.setVisible(v)
 
 
-class LineItem(QGraphicsLineItem):
+class LineItem(_SelectableMixin, QGraphicsLineItem):
     def __init__(self, line: FpLine):
         super().__init__()
         self.line = line
@@ -203,7 +284,7 @@ class LineItem(QGraphicsLineItem):
         self.setPen(_layer_pen(self.line.layer, self.line.width))
 
 
-class CircleItem(QGraphicsEllipseItem):
+class CircleItem(_SelectableMixin, QGraphicsEllipseItem):
     def __init__(self, c: FpCircle):
         super().__init__()
         self.circle = c
@@ -216,7 +297,7 @@ class CircleItem(QGraphicsEllipseItem):
         self.setPen(_layer_pen(self.circle.layer, self.circle.width))
 
 
-class ArcItem(QGraphicsPathItem):
+class ArcItem(_SelectableMixin, QGraphicsPathItem):
     def __init__(self, a: FpArc):
         super().__init__()
         self.arc = a
@@ -228,7 +309,7 @@ class ArcItem(QGraphicsPathItem):
         self.setPen(_layer_pen(self.arc.layer, self.arc.width))
 
 
-class TextItem(QGraphicsSimpleTextItem):
+class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
     def __init__(self, t, fp: Footprint):
         super().__init__()
         self.text_obj = t
