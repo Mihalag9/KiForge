@@ -108,11 +108,17 @@ def _pad_lines(pad: Pad) -> list[str]:
         sh += f" {pad.pad_dx} {pad.pad_dy} {pad.pad_angle}"
     out.append(sh)
 
-    if pad.drill is not None and pad.drill > 0:
-        dx = _i(pad.drill)
-        dy = _i(pad.drill_y) if pad.drill_y else dx
-        off = _i(pad.drill_offset) if pad.drill_offset else 0
-        out.append(f"Dr {dx} {dy} {off}")
+    # Строка Dr. Legacy-формат KiCad (все в 0.1 мил):
+    #     Dr <size> <x_off> <y_off>
+    # При отсутствии отверстия пишем "Dr 0 0 0". Ключевой момент: X- и
+    # Y-смещения — это отдельные независимые величины, их нельзя
+    # подменять диаметром. Если отверстия нет, оба смещения должны быть
+    # нулевыми (иначе KiCad увидит смещённое несуществующее отверстие).
+    if pad.has_drill:
+        size = _i(pad.drill)
+        off_x = _i(pad.drill_offset_x)
+        off_y = _i(pad.drill_offset_y)
+        out.append(f"Dr {size} {off_x} {off_y}")
     else:
         out.append("Dr 0 0 0")
 

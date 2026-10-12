@@ -76,6 +76,10 @@ class PropertiesPanel(QWidget):
         self.p_h = self._spin(0.01, 100); self.p_h.valueChanged.connect(self._apply_pad)
         self.p_drill = self._spin(0.0, 50); self.p_drill.valueChanged.connect(self._apply_pad)
         self.p_drill.setSpecialValueText("нет")
+        # Смещение центра отверстия относительно центра пада. Значения
+        # могут быть отрицательными и положительными.
+        self.p_offx = self._spin(-50, 50); self.p_offx.valueChanged.connect(self._apply_pad)
+        self.p_offy = self._spin(-50, 50); self.p_offy.valueChanged.connect(self._apply_pad)
         self.p_attach = QComboBox(); self.p_attach.addItems(["STD", "SMD"])
         self.p_attach.currentTextChanged.connect(self._apply_pad)
 
@@ -86,9 +90,12 @@ class PropertiesPanel(QWidget):
         self.form.addRow("Ширина", self.p_w)
         self.form.addRow("Высота", self.p_h)
         self.form.addRow("Drill (0=нет)", self.p_drill)
+        self.form.addRow("Смещ. отв. X", self.p_offx)
+        self.form.addRow("Смещ. отв. Y", self.p_offy)
         self.form.addRow("Attachment", self.p_attach)
         self._pad_w = [self.p_number, self.p_shape, self.p_x, self.p_y,
-                       self.p_w, self.p_h, self.p_drill, self.p_attach]
+                       self.p_w, self.p_h, self.p_drill,
+                       self.p_offx, self.p_offy, self.p_attach]
 
     def _build_line(self):
         self.l_x1 = self._spin(-1000, 1000); self.l_x1.valueChanged.connect(self._apply_line)
@@ -180,6 +187,8 @@ class PropertiesPanel(QWidget):
             self.p_x.setValue(it.pad.x); self.p_y.setValue(it.pad.y)
             self.p_w.setValue(it.pad.width); self.p_h.setValue(it.pad.height)
             self.p_drill.setValue(it.pad.drill or 0.0)
+            self.p_offx.setValue(it.pad.drill_offset_x)
+            self.p_offy.setValue(it.pad.drill_offset_y)
             self.p_attach.setCurrentText(it.pad.attachment)
             self._loading = False
         elif isinstance(it, LineItem):
@@ -234,6 +243,13 @@ class PropertiesPanel(QWidget):
     def _apply_pad(self, *_):
         if self._loading or self.item is None: return
         drill = self.p_drill.value() or None
+        # Если отверстия нет — смещения обнуляем, иначе KiCad может
+        # показать фантомное смещённое отверстие.
+        if drill is None:
+            offx = 0.0; offy = 0.0
+        else:
+            offx = self.p_offx.value()
+            offy = self.p_offy.value()
         self._push(EditPadCommand(
             self.item,
             number=self.p_number.text(),
@@ -241,6 +257,8 @@ class PropertiesPanel(QWidget):
             x=self.p_x.value(), y=self.p_y.value(),
             width=self.p_w.value(), height=self.p_h.value(),
             drill=drill,
+            drill_offset_x=offx,
+            drill_offset_y=offy,
             attachment=self.p_attach.currentText(),
         ))
 

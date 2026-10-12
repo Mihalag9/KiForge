@@ -231,17 +231,38 @@ def _read_pad_sh(pad, rest):
 
 
 def _read_pad_dr(pad, rest):
+    """Разобрать строку 'Dr' пада.
+
+    Формат legacy KiCad (единицы 0.1 мил):
+        Dr <size> <x_off> <y_off>              # круглое отверстие
+        Dr <size> <x_off> <y_off> O <w> <h>    # овальное (slot)
+
+    <size> — диаметр круглого отверстия; <x_off>/<y_off> — смещение центра
+    отверстия относительно центра пада. Для слота реальные габариты
+    задаются парой <w>/<h> после буквы "O"; <size> при этом игнорируется.
+    """
     parts = rest.split()
     if not parts:
-        pad.drill = None; return
-    dx = parse_int(parts[0])
-    dy = parse_int(parts[1]) if len(parts) >= 2 else dx
-    off = parse_int(parts[2]) if len(parts) >= 3 else 0
-    if dx == 0 and dy == 0:
-        pad.drill = None; return
-    pad.drill = units_to_mm(dx)
-    pad.drill_y = units_to_mm(dy) if (dy and dy != dx) else None
-    pad.drill_offset = units_to_mm(off)
+        pad.drill = None
+        pad.drill_offset_x = 0.0
+        pad.drill_offset_y = 0.0
+        return
+
+    size = parse_int(parts[0], 0)
+    off_x = parse_int(parts[1], 0) if len(parts) >= 2 else 0
+    off_y = parse_int(parts[2], 0) if len(parts) >= 3 else 0
+
+    if len(parts) >= 4 and parts[3].upper() == "O":
+        w = parse_int(parts[4], 0) if len(parts) >= 5 else 0
+        h = parse_int(parts[5], 0) if len(parts) >= 6 else 0
+        # Для нашего редактора достаточно знать «эффективный диаметр» —
+        # меньшее измерение слота. Смещение остаётся тем же.
+        cands = [x for x in (w, h) if x > 0]
+        size = min(cands) if cands else 0
+
+    pad.drill = units_to_mm(size) if size > 0 else None
+    pad.drill_offset_x = units_to_mm(off_x)
+    pad.drill_offset_y = units_to_mm(off_y)
 
 
 def _read_pad_at(pad, rest):

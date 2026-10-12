@@ -255,10 +255,11 @@ class PadItem(_SelectableMixin, QGraphicsPathItem):
         self.setBrush(QBrush(fill))
 
         self._remove_hole()
-        if self.pad.drill and self.pad.drill > 0:
-            rx = self.pad.drill / 2.0
-            ry = (self.pad.drill_y or self.pad.drill) / 2.0
-            hole = QGraphicsEllipseItem(-rx, -ry, 2 * rx, 2 * ry, self)
+        if self.pad.has_drill:
+            r = self.pad.drill / 2.0
+            ox = self.pad.drill_offset_x
+            oy = self.pad.drill_offset_y
+            hole = QGraphicsEllipseItem(ox - r, oy - r, 2 * r, 2 * r, self)
             hole.setBrush(QBrush(BG_COLOR))
             hole.setPen(Qt.NoPen)
             hole.setAcceptedMouseButtons(Qt.NoButton)

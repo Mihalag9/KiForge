@@ -1,7 +1,7 @@
 """Модель данных KiForge для формата PCBNEW-LibModule-V1 (.mod).
 
 Все координаты и размеры — в мм. В файле .mod они в единицах 0.1 мил
-(1 unit = 0.00254 мм), конвертация — в io_mod.units.
+(1 unit = 0.00254 мм), конвертация — в io_kicad.units.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -18,9 +18,19 @@ class Pad:
     pad_dx: int = 0                     # сырые единицы, обычно 0
     pad_dy: int = 0
     pad_angle: int = 0
-    drill: float | None = None          # мм; None = SMD
-    drill_y: float | None = None        # мм; если овальное отверстие
-    drill_offset: float = 0.0           # мм
+
+    # --- Отверстие -----------------------------------------------------------
+    # В .mod строка "Dr" пада выглядит так (legacy KiCad, единицы 0.1 мил):
+    #     Dr <size> <x_off> <y_off>              — круглое отверстие
+    #     Dr <size> <x_off> <y_off> O <w> <h>    — овальное (слот)
+    # <size>    — диаметр круглого отверстия;
+    # <x_off>   — X-смещение центра отверстия относительно центра пада;
+    # <y_off>   — Y-смещение центра отверстия относительно центра пада.
+    # В модели храним всё уже в мм.
+    drill: float | None = None          # диаметр; None = отверстия нет (SMD)
+    drill_offset_x: float = 0.0         # мм
+    drill_offset_y: float = 0.0         # мм
+
     attachment: str = "STD"             # STD | SMD
     attach_flag: str = "N"
     flags: str = "00E0FFFF"
@@ -31,6 +41,10 @@ class Pad:
     @property
     def is_smd(self) -> bool:
         return self.drill is None or self.drill <= 0.0
+
+    @property
+    def has_drill(self) -> bool:
+        return self.drill is not None and self.drill > 0.0
 
 
 @dataclass
