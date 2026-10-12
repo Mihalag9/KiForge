@@ -5,7 +5,8 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QWidget)
 
 from core.commands import (EditArcCommand, EditCircleCommand,
-                           EditLineCommand, EditPadCommand, EditTextCommand)
+                           EditLineCommand, EditPadCommand, EditTextCommand,
+                           RemoveTextCommand)
 from core.footprint import Footprint
 from ui.layers_panel import KICAD_LAYERS
 
@@ -197,10 +198,6 @@ class PropertiesPanel(QWidget):
             self.p_drill.setValue(it.pad.drill or 0.0)
             self.p_offx.setValue(it.pad.drill_offset_x)
             self.p_offy.setValue(it.pad.drill_offset_y)
-            # Если в файле встретился нестандартный attachment (например,
-            # исторический HOLE или что-то ещё), setCurrentText молча
-            # оставит текущий индекс — модель не портится, пока
-            # пользователь не тронет комбобокс.
             if it.pad.attachment in _PAD_ATTACHMENTS:
                 self.p_attach.setCurrentText(it.pad.attachment)
             self._refresh_pad_limits()
@@ -334,15 +331,50 @@ class PropertiesPanel(QWidget):
             width=self.a_width.value()))
 
     def _apply_text(self, *_):
-        if self._loading or self.item is None: return
+        if self._loading or self.item is None:
+            return
+
+        new_text = self.t_content.text()
+        kind = getattr(self.item, "kind", "")
+
+        # 1) Reference и value — обязательные поля KiCad. Пустое
+        #    значение не применяем: возвращаем прежний текст в поле и
+        #    показываем причину в статусбаре.
+        if kind in ("reference", "value") and not new_text.strip():
+            self._loading = True
+            try:
+                self.t_content.setText(getattr(self.item, "text", ""))
+            finally:
+                self._loading = False
+            self._notify_cannot_clear()
+            return
+
+        # 2) Пользовательский текст, если пользователь стёр его целиком,
+        #    удаляем сам элемент — иначе на канве останется невидимый
+        #    пустой TextItem, который невозможно ни выделить, ни удалить.
+        if kind == "user" and not new_text.strip() \
+                and self.footprint is not None:
+            self._push(RemoveTextCommand(self.footprint, self.item))
+            return
+
+        # 3) Обычное обновление.
         self._push(EditTextCommand(
             self.item,
-            text=self.t_content.text(),
+            text=new_text,
             x=self.t_x.value(), y=self.t_y.value(),
             rotation=self.t_rot.value(),
             width=self.t_w.value(), height=self.t_h.value(),
             layer=self.t_layer.currentText(),
             visible=self.t_visible.isChecked()))
+
+    def _notify_cannot_clear(self):
+        """Короткое сообщение в статусбар главного окна."""
+        win = self.window()
+        status = getattr(win, "statusBar", None)
+        if callable(status):
+            status().showMessage(
+                "Текст «обозначение»/«значение» нельзя оставить пустым — "
+                "это обязательные поля KiCad.", 3500)
 
     def _push(self, cmd):
         if self.cmd_stack is not None:

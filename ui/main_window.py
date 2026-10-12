@@ -539,8 +539,13 @@ class MainWindow(QMainWindow):
     def new_library(self):
         name, ok = QInputDialog.getText(self, "Новая библиотека",
                                         "Имя файла (без .mod):", text="my_lib")
-        if not ok: return
-        name = name.strip() or "my_lib"
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self._msg_info("Пустое имя",
+                           "Имя библиотеки не может быть пустым.")
+            return
 
         self.library = Library(file_name=name)
         self.current_path = None
@@ -667,11 +672,17 @@ class MainWindow(QMainWindow):
 
     def add_module(self):
         """Создать новый пустой модуль и сразу открыть его во вкладке."""
-        if self.library is None: return
+        if self.library is None:
+            return
         name, ok = QInputDialog.getText(self, "Новый модуль", "Имя:",
                                         text="Module")
-        if not ok: return
-        name = name.strip() or "Module"
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self._msg_info("Пустое имя",
+                           "Имя модуля не может быть пустым.")
+            return
         fp = new_footprint(name=name)
         self.library.modules.append(fp)
         self._add_module_tab(fp)
@@ -680,13 +691,20 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Создан модуль «{name}»", 3000)
 
     def rename_module(self):
-        if self.library is None: return
+        if self.library is None:
+            return
         c = self._current_canvas()
-        if c is None or c.footprint is None: return
+        if c is None or c.footprint is None:
+            return
         name, ok = QInputDialog.getText(self, "Переименовать модуль",
                                         "Новое имя:", text=c.footprint.name)
-        if not ok: return
-        name = name.strip() or c.footprint.name
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            self._msg_info("Пустое имя",
+                           "Имя модуля не может быть пустым.")
+            return
         c.footprint.name = name
         idx = self.tabs.currentIndex()
         self.tabs.setTabText(idx, name)
