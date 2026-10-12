@@ -190,6 +190,12 @@ class PropertiesPanel(QWidget):
             self.p_offx.setValue(it.pad.drill_offset_x)
             self.p_offy.setValue(it.pad.drill_offset_y)
             self.p_attach.setCurrentText(it.pad.attachment)
+            # Обновить допустимые диапазоны под размеры этого пада. Если
+            # в исходном .mod был drill > min(w, h), спинбокс визуально
+            # обрежет значение — при первом же редактировании оно
+            # «нормализуется» в модели. Сам файл при этом не портится,
+            # пока пользователь ничего не тронул.
+            self._refresh_pad_limits()
             self._loading = False
         elif isinstance(it, LineItem):
             self.item = it.line
@@ -240,8 +246,44 @@ class PropertiesPanel(QWidget):
             self.title.setText("Объект не редактируется")
 
     # --- применение ---
+    def _refresh_pad_limits(self):
+        """Синхронизировать допустимые диапазоны drill и offset с размером пада.
+
+        Пока спинбоксы работают, физически невозможно ввести:
+          * диаметр отверстия больше `min(width, height)`;
+          * смещение, при котором контур отверстия вылезает за рамку пада.
+
+        Используем `_loading`, чтобы setMaximum()/setRange() не вызвали
+        повторных valueChanged и не ушли в рекурсию.
+        """
+        w = max(self.p_w.value(), 0.01)
+        h = max(self.p_h.value(), 0.01)
+        max_drill = min(w, h)
+
+        prev_loading = self._loading
+        self._loading = True
+        try:
+            # Диаметр отверстия не может превышать меньший габарит пада.
+            self.p_drill.setMaximum(max_drill)
+            drill = self.p_drill.value()
+
+            # Смещение: центр отверстия должен быть сдвинут не дальше,
+            # чем на столько, чтобы весь контур (радиус drill/2) остался
+            # внутри рамки пада.
+            max_offx = max((w - drill) / 2.0, 0.0)
+            max_offy = max((h - drill) / 2.0, 0.0)
+            self.p_offx.setRange(-max_offx, max_offx)
+            self.p_offy.setRange(-max_offy, max_offy)
+        finally:
+            self._loading = prev_loading
+
     def _apply_pad(self, *_):
         if self._loading or self.item is None: return
+        # Сначала приводим диапазоны к текущим размерам пада — это может
+        # обрезать drill и смещения, если пользователь уменьшил габариты
+        # или ввёл слишком большое отверстие.
+        self._refresh_pad_limits()
+
         drill = self.p_drill.value() or None
         # Если отверстия нет — смещения обнуляем, иначе KiCad может
         # показать фантомное смещённое отверстие.
