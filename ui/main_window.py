@@ -102,9 +102,6 @@ class MainWindow(QMainWindow):
 
         self._apply_grid(self.current_grid_mm)
         self._update_state()
-        self.statusBar().showMessage(
-            "Откройте или создайте .mod-библиотеку. Формат: PCBNEW-LibModule-V1.",
-            6000)
 
     # ------------------------------------------------------------------
     # Табы
@@ -227,6 +224,11 @@ class MainWindow(QMainWindow):
         else:
             self.stack.setCurrentWidget(self.welcome)
             self.props.set_selection([], None)
+            # На welcome-экране статусбар всегда пуст: никаких
+            # приглашений, подсказок и «залипших» сообщений от прошлых
+            # действий. Любой будущий showMessage будет сброшен при
+            # возврате в этот режим.
+            self.statusBar().clearMessage()
         self._update_title()
 
     def _update_title(self):
