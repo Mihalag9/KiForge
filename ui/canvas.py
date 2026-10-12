@@ -9,8 +9,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGraphicsEllipseItem,
                                QGraphicsItem, QGraphicsLineItem,
                                QGraphicsPathItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView, QLabel,
-                               QLineEdit, QStyle, QStyleOptionGraphicsItem,
-                               QVBoxLayout)
+                               QLineEdit, QMenu, QStyle,
+                               QStyleOptionGraphicsItem, QVBoxLayout)
 
 from core.arc_math import arc_points_from_center
 from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
@@ -598,6 +598,7 @@ class FootprintView(QGraphicsView):
     def mousePressEvent(self, ev):
         if self.footprint is None:
             super().mousePressEvent(ev); return
+
         if self.current_tool != "select":
             if ev.button() == Qt.LeftButton:
                 sp = self.mapToScene(ev.position().toPoint())
@@ -609,8 +610,28 @@ class FootprintView(QGraphicsView):
             if ev.button() == Qt.RightButton:
                 self._cancel_pending(); ev.accept(); return
             super().mousePressEvent(ev); return
+
+        # --- режим «Выбор» ---
+        # Alt+клик — циклический перебор объектов под курсором. Удобно,
+        # когда нужный элемент скрыт под другими и его не «достать»
+        # обычным кликом.
+        if ev.button() == Qt.LeftButton and (ev.modifiers() & Qt.AltModifier):
+            sp = self.mapToScene(ev.position().toPoint())
+            if self._cycle_overlapping(sp):
+                ev.accept(); return
+
+        # Правый клик — выпадающее меню со списком всех объектов под
+        # курсором. Это альтернатива Alt+клику: удобно, когда объектов
+        # много и хочется выбрать сразу.
+        if ev.button() == Qt.RightButton:
+            sp = self.mapToScene(ev.position().toPoint())
+            if self._show_overlap_menu(sp, ev.globalPosition().toPoint(),
+                                       ev.modifiers()):
+                ev.accept(); return
+
         if ev.button() == Qt.LeftButton:
-            if not (ev.modifiers() & (Qt.ControlModifier | Qt.ShiftModifier)):
+            if not (ev.modifiers() &
+                    (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier)):
                 sp = self.mapToScene(ev.position().toPoint())
                 if self._start_group_drag(sp):
                     ev.accept(); return
@@ -645,6 +666,107 @@ class FootprintView(QGraphicsView):
         if ev.key() == Qt.Key_Delete:
             self.delete_selected(); return
         super().keyPressEvent(ev)
+
+    # --- выбор из наложенных объектов ---
+
+    def _items_at(self, sp) -> list:
+        """Все перетаскиваемые объекты под точкой, сверху вниз.
+
+        `QGraphicsScene.items(pos)` возвращает элементы в порядке
+        «верхний → нижний» с учётом Z-порядка, что и нужно для меню
+        и для циклического перебора: первый элемент — тот, который
+        пользователь видит поверх остальных.
+        """
+        return [it for it in self._scene.items(sp)
+                if isinstance(it, DRAGGABLE)]
+
+    def _describe(self, it) -> str:
+        """Короткое человекочитаемое описание объекта для меню."""
+        if isinstance(it, PadItem):
+            return f"Пад {it.pad.number} ({it.pad.shape})"
+        if isinstance(it, LineItem):
+            return f"Линия на {it.line.layer}"
+        if isinstance(it, CircleItem):
+            return f"Окружность на {it.circle.layer}"
+        if isinstance(it, ArcItem):
+            return f"Дуга на {it.arc.layer}"
+        if isinstance(it, TextItem):
+            t = (it.text_obj.text or "").strip()
+            if len(t) > 40:
+                t = t[:37] + "…"
+            label = t if t else "(пустой текст)"
+            return f"Текст «{label}»"
+        return "Объект"
+
+    def _cycle_overlapping(self, sp) -> bool:
+        """Alt+клик: переключиться на следующий объект под курсором.
+
+        Логика:
+          * если под курсором ничего нет — ничего не делаем, даём
+            обычному клику шанс начать rubber band;
+          * если ни один объект не выделен — выделяем верхний;
+          * если что-то уже выделено — переходим к следующему
+            в списке `_items_at` (сверху вниз), зацикливаясь в конце.
+        """
+        items = self._items_at(sp)
+        if not items:
+            return False
+
+        selected = [it for it in items if it.isSelected()]
+        if not selected:
+            target = items[0]
+        else:
+            current = selected[0]
+            try:
+                idx = items.index(current)
+            except ValueError:
+                idx = -1
+            target = items[(idx + 1) % len(items)]
+
+        self._scene.clearSelection()
+        target.setSelected(True)
+        return True
+
+    def _show_overlap_menu(self, sp, global_pos, modifiers) -> bool:
+        """Правый клик: показать меню со списком объектов под курсором.
+
+        Возвращает True, если меню действительно было показано (то есть
+        под курсором есть хотя бы один объект) — тогда вызывающая
+        сторона поглотит событие. Иначе возвращает False, чтобы
+        правый клик никак не мешал.
+        """
+        items = self._items_at(sp)
+        if not items:
+            return False
+
+        menu = QMenu(self)
+        header = menu.addAction("Объекты под курсором:")
+        header.setEnabled(False)
+        menu.addSeparator()
+
+        actions = []
+        for idx, it in enumerate(items):
+            act = menu.addAction(self._describe(it))
+            act.setData(idx)
+            if it.isSelected():
+                act.setCheckable(True)
+                act.setChecked(True)
+            actions.append(act)
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return True  # меню закрыто без выбора — событие поглощено
+        idx = chosen.data()
+        if idx is None:
+            return True
+        it = items[idx]
+
+        # Ctrl/Shift при правом клике = добавить к выделению, иначе —
+        # заменить его выбранным объектом.
+        if not (modifiers & (Qt.ControlModifier | Qt.ShiftModifier)):
+            self._scene.clearSelection()
+        it.setSelected(True)
+        return True
 
     # --- групповое перетаскивание ---
     def _selection_rect_scene(self, item) -> QRectF:
