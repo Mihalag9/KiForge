@@ -45,13 +45,13 @@ LAYER_COLORS = {
 }
 DEFAULT_LAYER_COLOR = "#b8b8b8"
 
-BG_COLOR     = QColor("#1f1f1f")
-GRID_COLOR   = QColor("#4a4a4a")
+BG_COLOR      = QColor("#0B1220")
+GRID_COLOR    = QColor("#26324A")
 GRID_PEN_WIDTH = 2.4
-AXIS_COLOR   = QColor("#4d6bfe")
+AXIS_COLOR    = QColor("#4d6bfe")
 PREVIEW_COLOR = QColor("#ffffff")
-PAD_NUM_COLOR = QColor("#111111")
-PAD_COLOR    = QColor("#c8b464")
+PAD_NUM_COLOR = QColor("#ffffff")
+PAD_COLOR     = QColor("#c14a4a")
 
 
 def _layer_qcolor(layer: str) -> QColor:
