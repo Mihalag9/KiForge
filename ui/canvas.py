@@ -637,9 +637,34 @@ class FootprintView(QGraphicsView):
         super().keyPressEvent(ev)
 
     # --- групповое перетаскивание ---
+    def _selection_rect_scene(self, item) -> QRectF:
+        """Рамка выделения элемента в координатах сцены.
+
+        Это тот же зазор, что рисует _draw_selection: SELECTION_GAP_PX
+        экранных пикселей вокруг видимого контура. Переводим их в
+        сценовые единицы через текущий масштаб вида, чтобы попадание
+        мышью совпадало с тем, что видит пользователь.
+        """
+        lod = self.transform().m11() or 1.0
+        gap = SELECTION_GAP_PX / lod
+        rect = item.mapRectToScene(item._content_rect())
+        return rect.adjusted(-gap, -gap, gap, gap)
+
     def _hit_draggable(self, sp):
+        # 1) Точное попадание в контур (тело) элемента — приоритет выше,
+        #    чтобы кликом по видимой части соседнего объекта можно было
+        #    переключить выделение.
         for it in self._scene.items(sp):
-            if isinstance(it, DRAGGABLE): return it
+            if isinstance(it, DRAGGABLE):
+                return it
+        # 2) Клик в пустой зоне рамки выделения уже выделенного элемента —
+        #    тоже начинает drag. Если выделено несколько, вернём первый
+        #    подходящий; _start_group_drag подхватит всю группу.
+        for it in self._scene.selectedItems():
+            if not isinstance(it, DRAGGABLE):
+                continue
+            if self._selection_rect_scene(it).contains(sp):
+                return it
         return None
 
     def _start_group_drag(self, sp):
