@@ -21,6 +21,14 @@ _TEXT_KIND_LABELS = {
     "user": "текст",
 }
 
+# Типы контактной площадки — те же три, что в UI KiCad. В самом .mod
+# есть ещё `HOLE` (неметаллизированное отверстие), но полноценно
+# редактировать его нельзя без отдельного поля под маску слоёв, поэтому
+# в списке его не показываем. Если такой пад встретится в файле, reader
+# его прочитает, а writer сохранит без искажений — просто в комбобоксе
+# отобразится не он.
+_PAD_ATTACHMENTS = ["STD", "SMD", "CONN"]
+
 
 class PropertiesPanel(QWidget):
     def __init__(self):
@@ -80,7 +88,7 @@ class PropertiesPanel(QWidget):
         # могут быть отрицательными и положительными.
         self.p_offx = self._spin(-50, 50); self.p_offx.valueChanged.connect(self._apply_pad)
         self.p_offy = self._spin(-50, 50); self.p_offy.valueChanged.connect(self._apply_pad)
-        self.p_attach = QComboBox(); self.p_attach.addItems(["STD", "SMD"])
+        self.p_attach = QComboBox(); self.p_attach.addItems(_PAD_ATTACHMENTS)
         self.p_attach.currentTextChanged.connect(self._apply_pad)
 
         self.form.addRow("Номер", self.p_number)
@@ -189,12 +197,12 @@ class PropertiesPanel(QWidget):
             self.p_drill.setValue(it.pad.drill or 0.0)
             self.p_offx.setValue(it.pad.drill_offset_x)
             self.p_offy.setValue(it.pad.drill_offset_y)
-            self.p_attach.setCurrentText(it.pad.attachment)
-            # Обновить допустимые диапазоны под размеры этого пада. Если
-            # в исходном .mod был drill > min(w, h), спинбокс визуально
-            # обрежет значение — при первом же редактировании оно
-            # «нормализуется» в модели. Сам файл при этом не портится,
-            # пока пользователь ничего не тронул.
+            # Если в файле встретился нестандартный attachment (например,
+            # исторический HOLE или что-то ещё), setCurrentText молча
+            # оставит текущий индекс — модель не портится, пока
+            # пользователь не тронет комбобокс.
+            if it.pad.attachment in _PAD_ATTACHMENTS:
+                self.p_attach.setCurrentText(it.pad.attachment)
             self._refresh_pad_limits()
             self._loading = False
         elif isinstance(it, LineItem):
@@ -263,13 +271,8 @@ class PropertiesPanel(QWidget):
         prev_loading = self._loading
         self._loading = True
         try:
-            # Диаметр отверстия не может превышать меньший габарит пада.
             self.p_drill.setMaximum(max_drill)
             drill = self.p_drill.value()
-
-            # Смещение: центр отверстия должен быть сдвинут не дальше,
-            # чем на столько, чтобы весь контур (радиус drill/2) остался
-            # внутри рамки пада.
             max_offx = max((w - drill) / 2.0, 0.0)
             max_offy = max((h - drill) / 2.0, 0.0)
             self.p_offx.setRange(-max_offx, max_offx)
@@ -279,9 +282,6 @@ class PropertiesPanel(QWidget):
 
     def _apply_pad(self, *_):
         if self._loading or self.item is None: return
-        # Сначала приводим диапазоны к текущим размерам пада — это может
-        # обрезать drill и смещения, если пользователь уменьшил габариты
-        # или ввёл слишком большое отверстие.
         self._refresh_pad_limits()
 
         drill = self.p_drill.value() or None
