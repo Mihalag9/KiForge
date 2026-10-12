@@ -2,8 +2,8 @@
 from __future__ import annotations
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QIcon
 from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QFrame,
                                QInputDialog, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget,
@@ -28,14 +28,22 @@ DEFAULT_USER_GRID_MM = 0.254
 DEFAULT_GRID_MM = 1.0
 
 TOOLS = [
-    ("select",  "↖", "Выбор/перемещение"),
-    ("pad",     "■", "Добавить пад"),
-    ("line",    "╱", "Добавить линию (2 клика)"),
-    ("circle",  "○", "Добавить окружность (2 клика: центр, радиус)"),
-    ("arc",     "◡", "Добавить дугу (3 клика: центр, начало, направление)"),
-    ("anchor",  "⚓", "Точка привязки модуля"),
-    ("delete",  "✕", "Удалить элемент"),
+    ("select",  "select",  "Выбор/перемещение"),
+    ("pad",     "pad",     "Добавить пад"),
+    ("line",    "line",    "Добавить линию (2 клика)"),
+    ("circle",  "circle",  "Добавить окружность (2 клика: центр, радиус)"),
+    ("arc",     "arc",     "Добавить дугу (3 клика: центр, начало, направление)"),
+    ("anchor",  "anchor",  "Точка привязки модуля"),
+    ("delete",  "delete",  "Удалить элемент"),
 ]
+
+_ICONS_DIR = Path(__file__).parent / "icons"
+
+
+def _icon(name: str) -> QIcon:
+    """Загрузить SVG-иконку из ui/icons/."""
+    p = _ICONS_DIR / f"{name}.svg"
+    return QIcon(str(p)) if p.exists() else QIcon()
 
 
 def _fmt_mm(mm): return f"{mm:.4f}".replace(".", ",")
@@ -258,17 +266,34 @@ class MainWindow(QMainWindow):
     def _build_top_toolbar(self):
         tb = self.addToolBar("Основное")
         tb.setMovable(False)
+        tb.setIconSize(QSize(18, 18))
         self.top_toolbar = tb
-        self.act_save_tb = tb.addAction("Сохранить", self.save_file)
+
+        self.act_save_tb = QAction(_icon("save"), "Сохранить", self)
+        self.act_save_tb.setToolTip("Сохранить библиотеку")
+        self.act_save_tb.triggered.connect(self.save_file)
+        tb.addAction(self.act_save_tb)
+
         tb.addSeparator()
-        self.act_undo_tb = tb.addAction("Отменить", self.undo)
-        self.act_redo_tb = tb.addAction("Повторить", self.redo)
+
+        self.act_undo_tb = QAction(_icon("undo"), "Отменить", self)
+        self.act_undo_tb.setToolTip("Отменить последнее действие (Ctrl+Z)")
+        self.act_undo_tb.triggered.connect(self.undo)
+        tb.addAction(self.act_undo_tb)
+
+        self.act_redo_tb = QAction(_icon("redo"), "Повторить", self)
+        self.act_redo_tb.setToolTip("Повторить отменённое действие (Ctrl+Y)")
+        self.act_redo_tb.triggered.connect(self.redo)
+        tb.addAction(self.act_redo_tb)
+
         tb.addSeparator()
+
         self.act_grid_tb = tb.addAction("Сетка", self.toggle_grid)
         self.act_resetzoom_tb = tb.addAction("Сброс масштаба", self._zoom_reset)
         tb.addSeparator()
         tb.addWidget(QLabel(" Сетка: "))
         self._build_grid_combo(tb)
+
         self._doc_actions.extend([
             self.act_save_tb, self.act_undo_tb, self.act_redo_tb,
             self.act_grid_tb, self.act_resetzoom_tb,
@@ -334,20 +359,30 @@ class MainWindow(QMainWindow):
 
     def _build_tools_toolbar(self):
         tb = QToolBar("Инструменты", self)
-        tb.setOrientation(Qt.Vertical); tb.setMovable(False)
-        tb.setStyleSheet("QToolBar { padding: 4px; } "
-                         "QToolButton { font-size: 18px; min-width: 28px; }")
+        tb.setOrientation(Qt.Vertical)
+        tb.setMovable(False)
+        tb.setIconSize(QSize(20, 20))
+        tb.setStyleSheet(
+            "QToolBar { padding: 4px; spacing: 4px; } "
+            "QToolButton { padding: 6px; min-width: 32px; min-height: 32px; "
+            "border-radius: 6px; }"
+        )
         self.addToolBar(Qt.LeftToolBarArea, tb)
         self.tools_toolbar = tb
 
         self._tool_group = QActionGroup(self)
         self._tool_group.setExclusive(True)
-        for tid, icon, tip in TOOLS:
-            a = QAction(icon, self)
-            a.setCheckable(True); a.setToolTip(tip); a.setData(tid)
+
+        for tid, icon_name, tip in TOOLS:
+            a = QAction(_icon(icon_name), "", self)
+            a.setCheckable(True)
+            a.setToolTip(tip)
+            a.setData(tid)
             a.triggered.connect(lambda _c=False, t=tid: self._set_tool(t))
-            self._tool_group.addAction(a); tb.addAction(a)
-            if tid == "select": a.setChecked(True)
+            self._tool_group.addAction(a)
+            tb.addAction(a)
+            if tid == "select":
+                a.setChecked(True)
 
     def _set_tool(self, tid):
         c = self._current_canvas()
