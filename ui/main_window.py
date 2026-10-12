@@ -62,6 +62,12 @@ class MainWindow(QMainWindow):
         self.user_grid_mm = DEFAULT_USER_GRID_MM
         self.current_grid_mm = DEFAULT_GRID_MM
 
+        # Глобальное состояние сетки и привязки — единое для всех вкладок.
+        # При выключении сетки привязка автоматически снимается: рисование
+        # и перетаскивание идут свободно (см. canvas.FootprintScene).
+        self.grid_visible = True
+        self.snap_to_grid = True
+
         # Канва активного таба
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
@@ -125,6 +131,12 @@ class MainWindow(QMainWindow):
         canvas.selection_changed = self._on_selection_changed
         canvas.set_visible_layers(self.layers.visible_layers())
         canvas.set_footprint(fp)
+        # Новая вкладка наследует текущее глобальное состояние сетки/привязки.
+        s = canvas.scene()
+        s.grid_step = self.current_grid_mm
+        s.grid_visible = self.grid_visible
+        s.snap_to_grid = self.snap_to_grid
+        s.update()
         idx = self.tabs.addTab(canvas, fp.name)
         self.tabs.setCurrentIndex(idx)
 
@@ -512,10 +524,29 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def toggle_grid(self):
+        """Сетка вкл/выкл. При выключении сетки привязка снимается.
+
+        Логика: пока сетка видна — элементы «щёлкают» по её узлам;
+        как только сетку гасят, инструменты рисуют и таскают элементы
+        свободно (с округлением до 0.1 мкм, чтобы не копить float-мусор).
+        Состояние применяется ко всем вкладкам сразу.
+        """
+        self.grid_visible = not self.grid_visible
+        # Привязка возможна только при видимой сетке.
+        self.snap_to_grid = self.grid_visible
         for c in self._iter_canvases():
             s = c.scene()
-            s.grid_visible = not s.grid_visible
+            s.grid_visible = self.grid_visible
+            s.snap_to_grid = self.snap_to_grid
             s.update()
+        if self.grid_visible:
+            self.statusBar().showMessage(
+                f"Сетка включена (шаг {_fmt_mm(self.current_grid_mm)} мм) — "
+                "элементы привязаны к сетке", 2500)
+        else:
+            self.statusBar().showMessage(
+                "Сетка выключена — рисование и перемещение без привязки",
+                2500)
 
     def _zoom_in(self):
         c = self._current_canvas()

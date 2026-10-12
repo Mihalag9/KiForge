@@ -54,6 +54,11 @@ PREVIEW_COLOR = QColor("#ffffff")
 PAD_NUM_COLOR = QColor("#ffffff")
 PAD_COLOR     = QColor("#c14a4a")
 
+# Округление координат при свободном (без привязки) позиционировании.
+# 4 знака после запятой = 0.1 мкм — с запасом покрывает точность .mod
+# (1 unit = 0.00254 мм ≈ 5 знаков) и не даёт копить float-мусор.
+FREE_ROUND_DIGITS = 4
+
 
 def _layer_qcolor(layer: str) -> QColor:
     return QColor(LAYER_COLORS.get(layer, DEFAULT_LAYER_COLOR))
@@ -251,10 +256,16 @@ class TextItem(QGraphicsSimpleTextItem):
 # --------------------------------------------------------------------------
 
 class FootprintScene(QGraphicsScene):
+    """Сцена модуля. Хранит состояние сетки и привязки к ней.
+
+    ``snap_to_grid`` управляется извне (MainWindow) синхронно с
+    ``grid_visible``: когда сетка выключена, привязка тоже выключена.
+    """
     def __init__(self, parent=None):
         super().__init__(parent)
         self.grid_step = 1.0
         self.grid_visible = True
+        self.snap_to_grid = True
         self.setBackgroundBrush(QBrush(BG_COLOR))
         self.setSceneRect(-100, -100, 200, 200)
 
@@ -519,9 +530,15 @@ class FootprintView(QGraphicsView):
 
     def _update_group_drag(self, sp):
         start = self._group_drag["start"]
-        step = self._scene.grid_step
-        dx = round((sp.x() - start.x()) / step) * step
-        dy = round((sp.y() - start.y()) / step) * step
+        if self._scene.snap_to_grid:
+            step = self._scene.grid_step
+            dx = round((sp.x() - start.x()) / step) * step
+            dy = round((sp.y() - start.y()) / step) * step
+        else:
+            # Свободное перетаскивание: без округления к шагу сетки,
+            # только срезаем float-хвост до 0.1 мкм.
+            dx = round(sp.x() - start.x(), FREE_ROUND_DIGITS)
+            dy = round(sp.y() - start.y(), FREE_ROUND_DIGITS)
         self._group_drag["last_dx"] = dx
         self._group_drag["last_dy"] = dy
         for it in self._group_drag["items"]:
@@ -660,6 +677,16 @@ class FootprintView(QGraphicsView):
 
     # --- утилиты ---
     def _snap(self, pos):
+        """Привязка к сетке, если она включена.
+
+        Когда сетка выключена (``scene.snap_to_grid`` = False),
+        координаты возвращаются «как есть», только с округлением до
+        0.1 мкм — иначе серия кликов накапливала бы float-мусор
+        в dataclass-полях модели.
+        """
+        if not self._scene.snap_to_grid:
+            return QPointF(round(pos.x(), FREE_ROUND_DIGITS),
+                           round(pos.y(), FREE_ROUND_DIGITS))
         s = self._scene.grid_step
         return QPointF(round(pos.x() / s) * s, round(pos.y() / s) * s)
 
