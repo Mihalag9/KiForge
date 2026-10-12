@@ -1,6 +1,8 @@
 """Тёмно-синяя тема KiForge. Применяется через QApplication.setStyleSheet."""
 from __future__ import annotations
 
+from pathlib import Path
+
 # ─── Токены ─────────────────────────────────────────────────────────────────
 BG           = "#0B1220"   # фон приложения
 SURFACE      = "#131A2A"   # карточки, панели
@@ -15,6 +17,11 @@ TEXT_DISABLED= "#5A6478"
 PRIMARY      = "#3E6FE0"
 PRIMARY_HOV  = "#4F7FE8"
 PRIMARY_PRES = "#2F57B8"
+
+
+# ─── Пути к иконкам ────────────────────────────────────────────────────────
+_ICONS_DIR = Path(__file__).parent / "icons"
+_CHECK_URL = (_ICONS_DIR / "check.svg").as_posix()
 
 
 DARK_QSS = f"""
@@ -135,16 +142,24 @@ QComboBox QAbstractItemView {{
 }}
 
 /* ─── Чекбоксы ────────────────────────────────────────────────────────── */
-QCheckBox {{ color: {TEXT}; spacing: 6px; }}
+QCheckBox {{ color: {TEXT}; spacing: 8px; padding: 2px 0; }}
 QCheckBox::indicator {{
-    width: 14px; height: 14px;
+    width: 16px; height: 16px;
     border: 1px solid {BORDER_2};
-    border-radius: 3px;
+    border-radius: 4px;
     background: {SURFACE};
+}}
+QCheckBox::indicator:hover {{
+    border-color: {PRIMARY};
 }}
 QCheckBox::indicator:checked {{
     background-color: {PRIMARY};
     border-color: {PRIMARY};
+    image: url("{_CHECK_URL}");
+}}
+QCheckBox::indicator:checked:hover {{
+    background-color: {PRIMARY_HOV};
+    border-color: {PRIMARY_HOV};
 }}
 
 /* ─── Табы модулей ────────────────────────────────────────────────────── */
