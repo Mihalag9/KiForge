@@ -46,7 +46,7 @@ def _user_grid_label(mm): return f"Пользовательская: {_fmt_mm(mm
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KiForge — .mod")
+        self.setWindowTitle("KiForge")
         self.resize(1400, 900)
 
         self.library: Library | None = None
@@ -216,10 +216,7 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def _update_title(self):
-        if self.library is None:
-            self.setWindowTitle("KiForge — .mod"); return
-        name = self.current_path.name if self.current_path else "новая библиотека"
-        self.setWindowTitle(f"KiForge — {name}  [модулей: {self.tabs.count()}]")
+        self.setWindowTitle("KiForge")
 
     # ------------------------------------------------------------------
     # Меню
