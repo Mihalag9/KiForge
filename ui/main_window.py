@@ -288,7 +288,6 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        self.act_grid_tb = tb.addAction("Сетка", self.toggle_grid)
         self.act_resetzoom_tb = tb.addAction("Сброс масштаба", self._zoom_reset)
         tb.addSeparator()
         tb.addWidget(QLabel(" Сетка: "))
@@ -296,7 +295,7 @@ class MainWindow(QMainWindow):
 
         self._doc_actions.extend([
             self.act_save_tb, self.act_undo_tb, self.act_redo_tb,
-            self.act_grid_tb, self.act_resetzoom_tb,
+            self.act_resetzoom_tb,
         ])
 
     def _build_grid_combo(self, tb):

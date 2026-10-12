@@ -102,6 +102,8 @@ class AddCircleCommand(_ListAdd):  label = "Добавить окружност�
 class RemoveCircleCommand(_ListRemove): label = "Удалить окружность"; attr = "circles"
 class AddArcCommand(_ListAdd):     label = "Добавить дугу";     attr = "arcs"
 class RemoveArcCommand(_ListRemove): label = "Удалить дугу";    attr = "arcs"
+class AddTextCommand(_ListAdd):    label = "Добавить текст";    attr = "texts"
+class RemoveTextCommand(_ListRemove): label = "Удалить текст";  attr = "texts"
 
 
 class MoveManyCommand(Command):

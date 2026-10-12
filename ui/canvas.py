@@ -14,7 +14,8 @@ from core.arc_math import arc_points_from_center
 from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
                            AddPadCommand, MoveManyCommand, RemoveArcCommand,
                            RemoveCircleCommand, RemoveLineCommand,
-                           RemovePadCommand, SetOriginCommand)
+                           RemovePadCommand, RemoveTextCommand,
+                           SetOriginCommand)
 from core.footprint import (Footprint, FpArc, FpCircle, FpLine, Pad,
                             next_pad_number)
 
@@ -410,6 +411,8 @@ class FootprintView(QGraphicsView):
                 self.cmd_stack.push(RemoveCircleCommand(self.footprint, it.circle))
             elif isinstance(it, ArcItem):
                 self.cmd_stack.push(RemoveArcCommand(self.footprint, it.arc))
+            elif isinstance(it, TextItem):
+                self.cmd_stack.push(RemoveTextCommand(self.footprint, it.text_obj))
 
     # --- зум ---
     def wheelEvent(self, ev):
@@ -429,8 +432,14 @@ class FootprintView(QGraphicsView):
             super().mousePressEvent(ev); return
         if self.current_tool != "select":
             if ev.button() == Qt.LeftButton:
-                pos = self._snap(self.mapToScene(ev.position().toPoint()))
-                self._handle_tool_click(pos); ev.accept(); return
+                sp = self.mapToScene(ev.position().toPoint())
+                if self.current_tool == "delete":
+                    # Для удаления используем точную позицию — файловые элементы
+                    # обычно не лежат на сетке, снап может увести клик за их пределы.
+                    self._tool_delete(sp)
+                else:
+                    self._handle_tool_click(self._snap(sp))
+                ev.accept(); return
             if ev.button() == Qt.RightButton:
                 self._cancel_pending(); ev.accept(); return
             super().mousePressEvent(ev); return
@@ -467,6 +476,8 @@ class FootprintView(QGraphicsView):
     def keyPressEvent(self, ev):
         if ev.key() == Qt.Key_Escape:
             self._cancel_pending(); return
+        if ev.key() == Qt.Key_Delete:
+            self.delete_selected(); return
         super().keyPressEvent(ev)
 
     # --- групповое перетаскивание ---
@@ -603,6 +614,8 @@ class FootprintView(QGraphicsView):
                 self._push_command(RemoveCircleCommand(self.footprint, it.circle)); return
             if isinstance(it, ArcItem):
                 self._push_command(RemoveArcCommand(self.footprint, it.arc)); return
+            if isinstance(it, TextItem):
+                self._push_command(RemoveTextCommand(self.footprint, it.text_obj)); return
 
     # --- предпросмотр ---
     def _style_preview(self, it):
