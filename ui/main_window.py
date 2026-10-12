@@ -4,8 +4,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QIcon
-from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QFrame,
-                               QInputDialog, QLabel, QMainWindow,
+from PySide6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
+                               QFrame, QInputDialog, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QStackedWidget,
                                QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
@@ -15,6 +15,7 @@ from core.library import Library
 from io_kicad import reader, writer
 from ui.canvas import FootprintView
 from ui.layers_panel import LayersPanel
+from ui.module_picker import ModulePickerDialog
 from ui.properties import PropertiesPanel
 
 
@@ -64,12 +65,10 @@ class MainWindow(QMainWindow):
         self.current_grid_mm = DEFAULT_GRID_MM
 
         # Глобальное состояние сетки и привязки — единое для всех вкладок.
-        # При выключении сетки привязка автоматически снимается: рисование
-        # и перетаскивание идут свободно (см. canvas.FootprintScene).
         self.grid_visible = True
         self.snap_to_grid = True
 
-        # Канва активного таба
+        # Вкладки модулей
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
         self.tabs.setMovable(True)
@@ -89,10 +88,12 @@ class MainWindow(QMainWindow):
         self.dock_props.setWidget(self.props)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_props)
 
-        # Центральный стек
+        # Центральный стек: welcome → empty → tabs
         self.welcome = self._make_welcome()
+        self.empty = self._make_empty()
         self.stack = QStackedWidget(self)
         self.stack.addWidget(self.welcome)
+        self.stack.addWidget(self.empty)
         self.stack.addWidget(self.tabs)
         self.setCentralWidget(self.stack)
 
@@ -138,17 +139,24 @@ class MainWindow(QMainWindow):
         idx = self.tabs.addTab(canvas, fp.name)
         self.tabs.setCurrentIndex(idx)
 
+    def _open_module(self, fp: Footprint):
+        """Открыть модуль в новой вкладке; если уже открыт — переключиться."""
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if getattr(w, "footprint", None) is fp:
+                self.tabs.setCurrentIndex(i)
+                return
+        self._add_module_tab(fp)
+
     def _close_tab(self, index: int):
         w = self.tabs.widget(index)
-        if w is None: return
+        if w is None:
+            return
         self.tabs.removeTab(index)
         w.deleteLater()
-        # Если удалили модуль из библиотеки — убираем и из модели
-        if self.library is not None:
-            for fp in list(self.library.modules):
-                if getattr(w, "footprint", None) is fp:
-                    self.library.modules.remove(fp)
-                    break
+        # ВАЖНО: модуль остаётся в library.modules — вкладка была лишь
+        # представлением. Пользователь может снова открыть его через
+        # «Файл → Открыть модули…» или кнопку в тулбаре.
         self._update_state()
 
     def _on_tab_changed(self, index: int):
@@ -162,7 +170,7 @@ class MainWindow(QMainWindow):
         self.props.cmd_stack = canvas.cmd_stack
 
     # ------------------------------------------------------------------
-    # Приветствие
+    # Приветствие / пустая библиотека
     # ------------------------------------------------------------------
 
     def _make_welcome(self) -> QWidget:
@@ -206,6 +214,47 @@ class MainWindow(QMainWindow):
         outer.addWidget(card)
         return w
 
+    def _make_empty(self) -> QWidget:
+        """Экран «библиотека загружена, но ни одна вкладка не открыта»."""
+        w = QWidget()
+        w.setObjectName("welcomeRoot")
+
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setAlignment(Qt.AlignCenter)
+
+        card = QFrame()
+        card.setObjectName("welcomeCard")
+        card.setFixedWidth(520)
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(48, 44, 48, 44)
+        cv.setSpacing(0)
+
+        title = QLabel("Библиотека загружена")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 24px; font-weight: 700;")
+        cv.addWidget(title)
+
+        cv.addSpacing(12)
+
+        sub = QLabel("Выберите модуль")
+        sub.setObjectName("welcomeSub")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setWordWrap(True)
+        cv.addWidget(sub)
+
+        cv.addSpacing(28)
+
+        btn_open = QPushButton("Открыть модуль…")
+        btn_open.setObjectName("welcomeBtnPrimary")
+        btn.setFixedHeight(46) if False else btn_open.setFixedHeight(46)
+        btn_open.setCursor(Qt.PointingHandCursor)
+        btn_open.clicked.connect(self.add_modules)
+        cv.addWidget(btn_open)
+
+        outer.addWidget(card)
+        return w
+
     # ------------------------------------------------------------------
     # Состояние «есть ли документ»
     # ------------------------------------------------------------------
@@ -219,16 +268,17 @@ class MainWindow(QMainWindow):
         self.dock_props.setVisible(has)
         self.dock_layers.setVisible(has)
         self.menu_view.menuAction().setVisible(has)
-        if has:
-            self.stack.setCurrentWidget(self.tabs)
-        else:
+
+        if not has:
             self.stack.setCurrentWidget(self.welcome)
             self.props.set_selection([], None)
-            # На welcome-экране статусбар всегда пуст: никаких
-            # приглашений, подсказок и «залипших» сообщений от прошлых
-            # действий. Любой будущий showMessage будет сброшен при
-            # возврате в этот режим.
             self.statusBar().clearMessage()
+        elif self.tabs.count() == 0:
+            # Библиотека загружена, но пользователь ещё не открыл вкладок.
+            self.stack.setCurrentWidget(self.empty)
+            self.props.set_selection([], None)
+        else:
+            self.stack.setCurrentWidget(self.tabs)
         self._update_title()
 
     def _update_title(self):
@@ -249,7 +299,8 @@ class MainWindow(QMainWindow):
         self._doc_actions.append(self._act(m, "Сохранить", self.save_file))
         self._doc_actions.append(self._act(m, "Сохранить как…", self.save_file_as))
         m.addSeparator()
-        self._doc_actions.append(self._act(m, "Добавить модуль…", self.add_module))
+        self._doc_actions.append(self._act(m, "Открыть модуль…", self.add_modules))
+        self._doc_actions.append(self._act(m, "Создать модуль…", self.add_module))
         self._doc_actions.append(self._act(m, "Переименовать модуль…", self.rename_module))
         m.addSeparator()
         self._act(m, "Выход", self.close)
@@ -296,6 +347,14 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        self.act_add_modules_tb = QAction("Открыть модуль…", self)
+        self.act_add_modules_tb.setToolTip(
+            "Выбрать модули из библиотеки для открытия во вкладках")
+        self.act_add_modules_tb.triggered.connect(self.add_modules)
+        tb.addAction(self.act_add_modules_tb)
+
+        tb.addSeparator()
+
         self.act_resetzoom_tb = tb.addAction("Сброс масштаба", self._zoom_reset)
         tb.addSeparator()
         tb.addWidget(QLabel(" Сетка: "))
@@ -303,7 +362,7 @@ class MainWindow(QMainWindow):
 
         self._doc_actions.extend([
             self.act_save_tb, self.act_undo_tb, self.act_redo_tb,
-            self.act_resetzoom_tb,
+            self.act_add_modules_tb, self.act_resetzoom_tb,
         ])
 
     def _build_grid_combo(self, tb):
@@ -439,15 +498,19 @@ class MainWindow(QMainWindow):
             self.library.file_name = Path(path).stem
 
         self._clear_tabs()
-        if not lib.modules:
-            QMessageBox.information(self, "Пустая библиотека",
-                                    "В файле нет ни одного $MODULE. "
-                                    "Создайте модуль через меню.")
-        for fp in lib.modules:
-            self._add_module_tab(fp)
         self._update_state()
         self.statusBar().showMessage(
             f"Открыто: {path}  [модулей: {len(lib.modules)}]", 4000)
+
+        if not lib.modules:
+            QMessageBox.information(self, "Пустая библиотека",
+                                    "В файле нет ни одного $MODULE. "
+                                    "Создайте модуль через "
+                                    "«Файл → Создать модуль…».")
+            return
+
+        # Не открываем сразу всё: предлагаем выбрать модули для вкладок.
+        self.add_modules()
 
     def _clear_tabs(self):
         while self.tabs.count():
@@ -486,7 +549,57 @@ class MainWindow(QMainWindow):
     # Модули
     # ------------------------------------------------------------------
 
+    def add_modules(self):
+        """Открыть диалог выбора модулей из текущей библиотеки.
+
+        Показывает только те модули, которых ещё нет во вкладках.
+        Если нужно переключиться на уже открытый модуль, это делается
+        обычным кликом по его вкладке.
+        """
+        if self.library is None:
+            return
+
+        if not self.library.modules:
+            QMessageBox.information(
+                self, "Нет модулей",
+                "В библиотеке нет ни одного модуля. Создайте новый через "
+                "«Файл → Создать модуль…».")
+            return
+
+        opened = {c.footprint.name for c in self._iter_canvases()
+                  if c.footprint is not None}
+        remaining = [fp for fp in self.library.modules
+                     if fp.name not in opened]
+        if not remaining:
+            QMessageBox.information(
+                self, "Все модули открыты",
+                "Все модули этой библиотеки уже открыты во вкладках.")
+            return
+
+        dlg = ModulePickerDialog(
+            self.library.modules,
+            exclude=opened,
+            parent=self,
+            title="Открыть модуль",
+            subtitle="Выберите модуль.",
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        names = set(dlg.selected_names())
+        # Открываем в порядке библиотеки — так вкладки появятся в
+        # стабильном порядке, независимо от того, в каком порядке
+        # пользователь щёлкал элементы в списке.
+        for fp in self.library.modules:
+            if fp.name in names:
+                self._open_module(fp)
+
+        self._update_state()
+        self.statusBar().showMessage(
+            f"Открыто модулей: {len(names)}", 3000)
+
     def add_module(self):
+        """Создать новый пустой модуль и сразу открыть его во вкладке."""
         if self.library is None: return
         name, ok = QInputDialog.getText(self, "Новый модуль", "Имя:", text="Module")
         if not ok: return
@@ -494,8 +607,9 @@ class MainWindow(QMainWindow):
         fp = new_footprint(name=name)
         self.library.modules.append(fp)
         self._add_module_tab(fp)
+        self._update_state()
         self._update_title()
-        self.statusBar().showMessage(f"Добавлен модуль «{name}»", 3000)
+        self.statusBar().showMessage(f"Создан модуль «{name}»", 3000)
 
     def rename_module(self):
         if self.library is None: return
@@ -527,15 +641,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def toggle_grid(self):
-        """Сетка вкл/выкл. При выключении сетки привязка снимается.
-
-        Логика: пока сетка видна — элементы «щёлкают» по её узлам;
-        как только сетку гасят, инструменты рисуют и таскают элементы
-        свободно (с округлением до 0.1 мкм, чтобы не копить float-мусор).
-        Состояние применяется ко всем вкладкам сразу.
-        """
+        """Сетка вкл/выкл. При выключении сетки привязка снимается."""
         self.grid_visible = not self.grid_visible
-        # Привязка возможна только при видимой сетке.
         self.snap_to_grid = self.grid_visible
         for c in self._iter_canvases():
             s = c.scene()
