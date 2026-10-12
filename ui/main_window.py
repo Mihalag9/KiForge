@@ -4,10 +4,10 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup
-from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog,
+from PySide6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QFrame,
                                QInputDialog, QLabel, QMainWindow,
-                               QMessageBox, QStackedWidget, QTabWidget,
-                               QToolBar, QVBoxLayout, QWidget)
+                               QMessageBox, QPushButton, QStackedWidget,
+                               QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from core.commands import CommandStack
 from core.footprint import Footprint, new_footprint
@@ -127,7 +127,6 @@ class MainWindow(QMainWindow):
         w.deleteLater()
         # Если удалили модуль из библиотеки — убираем и из модели
         if self.library is not None:
-            # найдём модуль по объекту
             for fp in list(self.library.modules):
                 if getattr(w, "footprint", None) is fp:
                     self.library.modules.remove(fp)
@@ -148,14 +147,52 @@ class MainWindow(QMainWindow):
     # Приветствие
     # ------------------------------------------------------------------
 
-    def _make_welcome(self):
+    def _make_welcome(self) -> QWidget:
         w = QWidget()
-        w.setStyleSheet("background:#1a1a1a;")
-        v = QVBoxLayout(w); v.addStretch(1)
-        hint = QLabel("Файл → Новая библиотека… или Файл → Открыть…")
+        w.setObjectName("welcomeRoot")
+
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setAlignment(Qt.AlignCenter)
+
+        card = QFrame()
+        card.setObjectName("welcomeCard")
+        card.setFixedWidth(520)
+        cv = QVBoxLayout(card)
+        cv.setContentsMargins(48, 44, 48, 44)
+        cv.setSpacing(0)
+
+        title = QLabel("KiForge")
+        title.setObjectName("welcomeTitle")
+        title.setAlignment(Qt.AlignCenter)
+        cv.addWidget(title)
+
+        cv.addSpacing(36)
+
+        btn_new = QPushButton("Создать новую библиотеку")
+        btn_new.setObjectName("welcomeBtnPrimary")
+        btn_new.setFixedHeight(46)
+        btn_new.setCursor(Qt.PointingHandCursor)
+        btn_new.clicked.connect(self.new_library)
+        cv.addWidget(btn_new)
+
+        cv.addSpacing(10)
+
+        btn_open = QPushButton("Открыть .mod…")
+        btn_open.setObjectName("welcomeBtnSecondary")
+        btn_open.setFixedHeight(46)
+        btn_open.setCursor(Qt.PointingHandCursor)
+        btn_open.clicked.connect(self.open_file)
+        cv.addWidget(btn_open)
+
+        cv.addSpacing(24)
+
+        hint = QLabel("Можно также открыть файл из меню  Файл → Открыть")
+        hint.setObjectName("welcomeHint")
         hint.setAlignment(Qt.AlignCenter)
-        hint.setStyleSheet("color:#c8c8c8; font-size:15px;")
-        v.addWidget(hint); v.addStretch(2)
+        cv.addWidget(hint)
+
+        outer.addWidget(card)
         return w
 
     # ------------------------------------------------------------------
@@ -166,9 +203,11 @@ class MainWindow(QMainWindow):
         has = self.library is not None
         for a in self._doc_actions:
             a.setEnabled(has)
+        self.top_toolbar.setVisible(has)
         self.tools_toolbar.setVisible(has)
         self.dock_props.setVisible(has)
         self.dock_layers.setVisible(has)
+        self.menu_view.menuAction().setVisible(has)
         if has:
             self.stack.setCurrentWidget(self.tabs)
         else:
@@ -203,6 +242,7 @@ class MainWindow(QMainWindow):
         self._act(m, "Выход", self.close)
 
         m = mb.addMenu("Вид")
+        self.menu_view = m
         self._doc_actions.append(self._act(m, "Сетка вкл/выкл", self.toggle_grid))
         self._doc_actions.append(self._act(m, "Править сетку…", self._edit_user_grid))
         m.addSeparator()
@@ -219,7 +259,9 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_top_toolbar(self):
-        tb = self.addToolBar("Основное"); tb.setMovable(False)
+        tb = self.addToolBar("Основное")
+        tb.setMovable(False)
+        self.top_toolbar = tb
         self.act_save_tb = tb.addAction("Сохранить", self.save_file)
         tb.addSeparator()
         self.act_undo_tb = tb.addAction("Отменить", self.undo)
