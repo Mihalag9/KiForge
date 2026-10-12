@@ -6,7 +6,7 @@ from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QIcon
 from PySide6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                                QFrame, QInputDialog, QLabel, QMainWindow,
-                               QMessageBox, QPushButton, QStackedWidget,
+                               QMenu, QMessageBox, QPushButton, QStackedWidget,
                                QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from core.commands import CommandStack
@@ -74,6 +74,9 @@ class MainWindow(QMainWindow):
         self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        # Контекстное меню на самом табе (правый клик) — быстрый доступ
+        # к «Переименовать»/«Удалить» без захода в верхнее меню.
+        self._setup_tab_context_menu()
 
         # Панель слоёв
         self.layers = LayersPanel(self)
@@ -156,7 +159,7 @@ class MainWindow(QMainWindow):
         w.deleteLater()
         # ВАЖНО: модуль остаётся в library.modules — вкладка была лишь
         # представлением. Пользователь может снова открыть его через
-        # «Файл → Открыть модули…» или кнопку в тулбаре.
+        # «Файл → Открыть модуль…» или кнопку в тулбаре.
         self._update_state()
 
     def _on_tab_changed(self, index: int):
@@ -168,6 +171,73 @@ class MainWindow(QMainWindow):
 
     def _rebind_props(self, canvas: FootprintView):
         self.props.cmd_stack = canvas.cmd_stack
+
+    # ------------------------------------------------------------------
+    # Диалоги с русскими надписями кнопок
+    # ------------------------------------------------------------------
+
+    def _msg_info(self, title: str, text: str):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.button(QMessageBox.StandardButton.Ok).setText("ОК")
+        box.exec()
+
+    def _msg_critical(self, title: str, text: str):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.button(QMessageBox.StandardButton.Ok).setText("ОК")
+        box.exec()
+
+    def _msg_ask(self, title: str, text: str,
+                 yes_text: str = "Да", no_text: str = "Нет") -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes |
+                               QMessageBox.StandardButton.No)
+        box.button(QMessageBox.StandardButton.Yes).setText(yes_text)
+        box.button(QMessageBox.StandardButton.No).setText(no_text)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        box.exec()
+        return box.standardButton(box.clickedButton()) == \
+            QMessageBox.StandardButton.Yes
+
+    # ------------------------------------------------------------------
+    # Контекстное меню на вкладке
+    # ------------------------------------------------------------------
+
+    def _setup_tab_context_menu(self):
+        bar = self.tabs.tabBar()
+        bar.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._on_tab_context_menu)
+
+    def _on_tab_context_menu(self, pos):
+        bar = self.tabs.tabBar()
+        idx = bar.tabAt(pos)
+        if idx < 0:
+            return
+        # Активировать вкладку, по которой щёлкнули, — чтобы действия
+        # ниже работали над «тем самым» модулем, а не над случайно
+        # выбранным.
+        self.tabs.setCurrentIndex(idx)
+
+        menu = QMenu(self)
+        menu.addAction("Переименовать модуль…", self.rename_module)
+        menu.addAction("Удалить модуль…", self.delete_module)
+        menu.addSeparator()
+        menu.addAction("Открыть ещё модуль…", self.add_modules)
+        menu.addAction("Создать модуль…", self.add_module)
+        menu.addSeparator()
+        menu.addAction("Закрыть вкладку",
+                       lambda: self._close_tab(self.tabs.currentIndex()))
+        menu.exec(bar.mapToGlobal(pos))
 
     # ------------------------------------------------------------------
     # Приветствие / пустая библиотека
@@ -247,7 +317,7 @@ class MainWindow(QMainWindow):
 
         btn_open = QPushButton("Открыть модуль…")
         btn_open.setObjectName("welcomeBtnPrimary")
-        btn.setFixedHeight(46) if False else btn_open.setFixedHeight(46)
+        btn_open.setFixedHeight(46)
         btn_open.setCursor(Qt.PointingHandCursor)
         btn_open.clicked.connect(self.add_modules)
         cv.addWidget(btn_open)
@@ -301,7 +371,9 @@ class MainWindow(QMainWindow):
         m.addSeparator()
         self._doc_actions.append(self._act(m, "Открыть модуль…", self.add_modules))
         self._doc_actions.append(self._act(m, "Создать модуль…", self.add_module))
-        self._doc_actions.append(self._act(m, "Переименовать модуль…", self.rename_module))
+        self._doc_actions.append(self._act(m, "Переименовать модуль…",
+                                           self.rename_module))
+        self._doc_actions.append(self._act(m, "Удалить модуль…", self.delete_module))
         m.addSeparator()
         self._act(m, "Выход", self.close)
 
@@ -489,7 +561,8 @@ class MainWindow(QMainWindow):
             text = Path(path).read_text(encoding="utf-8", errors="replace")
             lib = reader.read(text)
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать файл:\n{e}")
+            self._msg_critical("Ошибка",
+                               f"Не удалось прочитать файл:\n{e}")
             return
 
         self.library = lib
@@ -503,10 +576,9 @@ class MainWindow(QMainWindow):
             f"Открыто: {path}  [модулей: {len(lib.modules)}]", 4000)
 
         if not lib.modules:
-            QMessageBox.information(self, "Пустая библиотека",
-                                    "В файле нет ни одного $MODULE. "
-                                    "Создайте модуль через "
-                                    "«Файл → Создать модуль…».")
+            self._msg_info("Пустая библиотека",
+                           "В файле нет ни одного $MODULE. "
+                           "Создайте модуль через «Файл → Создать модуль…».")
             return
 
         # Не открываем сразу всё: предлагаем выбрать модули для вкладок.
@@ -538,7 +610,8 @@ class MainWindow(QMainWindow):
             text = writer.write(self.library)
             path.write_text(text, encoding="utf-8")
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить:\n{e}")
+            self._msg_critical("Ошибка",
+                               f"Не удалось сохранить:\n{e}")
             return
         self.current_path = path
         self.library.file_name = path.stem
@@ -553,17 +626,14 @@ class MainWindow(QMainWindow):
         """Открыть диалог выбора модулей из текущей библиотеки.
 
         Показывает только те модули, которых ещё нет во вкладках.
-        Если нужно переключиться на уже открытый модуль, это делается
-        обычным кликом по его вкладке.
         """
         if self.library is None:
             return
 
         if not self.library.modules:
-            QMessageBox.information(
-                self, "Нет модулей",
-                "В библиотеке нет ни одного модуля. Создайте новый через "
-                "«Файл → Создать модуль…».")
+            self._msg_info("Нет модулей",
+                           "В библиотеке нет ни одного модуля. Создайте "
+                           "новый через «Файл → Создать модуль…».")
             return
 
         opened = {c.footprint.name for c in self._iter_canvases()
@@ -571,9 +641,9 @@ class MainWindow(QMainWindow):
         remaining = [fp for fp in self.library.modules
                      if fp.name not in opened]
         if not remaining:
-            QMessageBox.information(
-                self, "Все модули открыты",
-                "Все модули этой библиотеки уже открыты во вкладках.")
+            self._msg_info("Все модули открыты",
+                           "Все модули этой библиотеки уже открыты "
+                           "во вкладках.")
             return
 
         dlg = ModulePickerDialog(
@@ -587,9 +657,6 @@ class MainWindow(QMainWindow):
             return
 
         names = set(dlg.selected_names())
-        # Открываем в порядке библиотеки — так вкладки появятся в
-        # стабильном порядке, независимо от того, в каком порядке
-        # пользователь щёлкал элементы в списке.
         for fp in self.library.modules:
             if fp.name in names:
                 self._open_module(fp)
@@ -601,7 +668,8 @@ class MainWindow(QMainWindow):
     def add_module(self):
         """Создать новый пустой модуль и сразу открыть его во вкладке."""
         if self.library is None: return
-        name, ok = QInputDialog.getText(self, "Новый модуль", "Имя:", text="Module")
+        name, ok = QInputDialog.getText(self, "Новый модуль", "Имя:",
+                                        text="Module")
         if not ok: return
         name = name.strip() or "Module"
         fp = new_footprint(name=name)
@@ -623,6 +691,49 @@ class MainWindow(QMainWindow):
         idx = self.tabs.currentIndex()
         self.tabs.setTabText(idx, name)
         self._update_title()
+
+    def delete_module(self):
+        """Удалить модуль текущей вкладки из библиотеки.
+
+        Модуль убирается из `library.modules` и его вкладка закрывается.
+        Действие необратимое (нет undo на уровне библиотеки), поэтому
+        сначала спрашиваем подтверждение. Если открыты другие вкладки
+        с другими модулями — они не затрагиваются.
+        """
+        if self.library is None:
+            return
+        c = self._current_canvas()
+        if c is None or c.footprint is None:
+            self._msg_info("Нет активного модуля",
+                           "Откройте модуль во вкладке — его можно удалить.")
+            return
+
+        fp = c.footprint
+        name = fp.name
+
+        if not self._msg_ask(
+                "Удалить модуль",
+                f"Удалить модуль «{name}» из библиотеки?\n\n"
+                "Он будет убран из файла при следующем сохранении. "
+                "Отменить это действие нельзя.",
+                yes_text="Удалить", no_text="Отмена"):
+            return
+
+        # Убрать из модели библиотеки
+        if fp in self.library.modules:
+            self.library.modules.remove(fp)
+
+        # Закрыть вкладку (одну, с этим конкретным модулем)
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if getattr(w, "footprint", None) is fp:
+                self.tabs.removeTab(i)
+                w.deleteLater()
+                break
+
+        self._update_state()
+        self.statusBar().showMessage(
+            f"Модуль «{name}» удалён из библиотеки", 4000)
 
     # ------------------------------------------------------------------
     # Правка
