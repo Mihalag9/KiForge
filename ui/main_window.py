@@ -193,13 +193,6 @@ class MainWindow(QMainWindow):
         btn_open.clicked.connect(self.open_file)
         cv.addWidget(btn_open)
 
-        cv.addSpacing(24)
-
-        hint = QLabel("Можно также открыть файл из меню  Файл → Открыть")
-        hint.setObjectName("welcomeHint")
-        hint.setAlignment(Qt.AlignCenter)
-        cv.addWidget(hint)
-
         outer.addWidget(card)
         return w
 
