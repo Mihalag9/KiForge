@@ -40,8 +40,15 @@ def _module_lines(fp: Footprint) -> list[str]:
         po += f" {fp.po_misc}"
     out.append(po)
     out.append(f"Li {fp.name}")
+    # Cd/Kw идут сразу после Li. Пишем только непустые значения,
+    # чтобы не менять файлы, где этих строк не было.
+    if fp.description:
+        out.append(f"Cd {fp.description}")
+    if fp.keywords:
+        out.append(f"Kw {fp.keywords}")
     out.append(f"Sc {fp.sc}")
-    out.append(f"AR {fp.ar}".rstrip() if fp.ar else "AR")
+    if fp.ar:
+        out.append(f"AR {fp.ar}")
     out.append(f"Op {fp.op}")
 
     for t in fp.texts:
@@ -65,10 +72,8 @@ def _module_lines(fp: Footprint) -> list[str]:
 def _text_line(t: FpText) -> str:
     """Строка T0/T1/T2.
 
-    T0 — reference (позиционное обозначение),
-    T1 — value (номинал),
-    T2 — пользовательская надпись KiForge (kind="user" и любые будущие
-    расширения, не совпадающие с первыми двумя).
+    Формат: T<kind> X Y H W A Pen Mirror Visible Layer Italic "Text".
+    ВАЖНО: H идёт первым, W — вторым. Угол — в 0.1°.
     """
     if t.kind == "reference":
         tag = "T0"
@@ -81,8 +86,9 @@ def _text_line(t: FpText) -> str:
     italic = "I" if t.italic else "N"
     layer = name_to_num(t.layer)
     txt = t.text.replace("\\", "\\\\").replace('"', '\\"')
-    return (f"{tag} {_i(t.x)} {_i(t.y)} {_i(t.width)} {_i(t.height)} "
-            f"{int(round(t.rotation))} {_i(t.thickness)} "
+    angle10 = int(round(t.rotation * 10))
+    return (f"{tag} {_i(t.x)} {_i(t.y)} {_i(t.height)} {_i(t.width)} "
+            f"{angle10} {_i(t.thickness)} "
             f"{mirror} {visible} {layer} {italic} \"{txt}\"")
 
 
@@ -97,8 +103,10 @@ def _dc_line(c: FpCircle) -> str:
 
 
 def _da_line(a: FpArc) -> str:
+    """Строка DA. Угол в файле — в 0.1°."""
+    angle10 = int(round(a.angle * 10))
     return (f"DA {_i(a.cx)} {_i(a.cy)} {_i(a.sx)} {_i(a.sy)} "
-            f"{int(round(a.angle))} {_i(a.width)} {name_to_num(a.layer)}")
+            f"{angle10} {_i(a.width)} {name_to_num(a.layer)}")
 
 
 def _pad_lines(pad: Pad) -> list[str]:
@@ -108,16 +116,14 @@ def _pad_lines(pad: Pad) -> list[str]:
         sh += f" {pad.pad_dx} {pad.pad_dy} {pad.pad_angle}"
     out.append(sh)
 
-    # Строка Dr. Legacy-формат KiCad (все в 0.1 мил):
-    #     Dr <size> <x_off> <y_off>
-    # При отсутствии отверстия пишем "Dr 0 0 0". Ключевой момент: X- и
-    # Y-смещения — это отдельные независимые величины, их нельзя
-    # подменять диаметром. Если отверстия нет, оба смещения должны быть
-    # нулевыми (иначе KiCad увидит смещённое несуществующее отверстие).
+    # Dr <size> <x_off> <y_off>. При отсутствии отверстия — «Dr 0 0 0».
+    # ВАЖНО: оба смещения в файле хранятся с обратными знаками — см.
+    # комментарий в reader._read_pad_dr. Инвертируем, чтобы направление,
+    # заданное пользователем на канве, совпадало с тем, что покажет KiCad.
     if pad.has_drill:
         size = _i(pad.drill)
-        off_x = _i(pad.drill_offset_x)
-        off_y = _i(pad.drill_offset_y)
+        off_x = _i(-pad.drill_offset_x)
+        off_y = _i(-pad.drill_offset_y)
         out.append(f"Dr {size} {off_x} {off_y}")
     else:
         out.append("Dr 0 0 0")

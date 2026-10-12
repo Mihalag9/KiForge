@@ -15,23 +15,21 @@ class Pad:
     y: float = 0.0
     width: float = 1.524
     height: float = 1.524
-    pad_dx: int = 0                     # сырые единицы, обычно 0
-    pad_dy: int = 0
+    pad_dx: int = 0                     # в файле это Ydelta, обычно 0
+    pad_dy: int = 0                     # в файле это Xdelta, обычно 0
     pad_angle: int = 0
 
     # --- Отверстие -----------------------------------------------------------
-    # В .mod строка "Dr" пада выглядит так (legacy KiCad, единицы 0.1 мил):
-    #     Dr <size> <x_off> <y_off>              — круглое отверстие
-    #     Dr <size> <x_off> <y_off> O <w> <h>    — овальное (слот)
-    # <size>    — диаметр круглого отверстия;
-    # <x_off>   — X-смещение центра отверстия относительно центра пада;
-    # <y_off>   — Y-смещение центра отверстия относительно центра пада.
-    # В модели храним всё уже в мм.
-    drill: float | None = None          # диаметр; None = отверстия нет (SMD)
-    drill_offset_x: float = 0.0         # мм
-    drill_offset_y: float = 0.0         # мм
+    # Строка "Dr" пада (legacy KiCad, единицы 0.1 мил):
+    #     Dr <size> <x_off> <y_off>              — круглое
+    #     Dr <size> <x_off> <y_off> O <w> <h>    — овальное (slot)
+    # <size>  — диаметр; <x_off>/<y_off> — независимые смещения центра
+    # отверстия относительно центра пада. Храним в мм.
+    drill: float | None = None
+    drill_offset_x: float = 0.0
+    drill_offset_y: float = 0.0
 
-    attachment: str = "STD"             # STD | SMD
+    attachment: str = "STD"             # STD | SMD | CONN | HOLE
     attach_flag: str = "N"
     flags: str = "00E0FFFF"
     net: int = 0
@@ -49,13 +47,13 @@ class Pad:
 
 @dataclass
 class FpText:
-    kind: str = "reference"             # reference (T0) / value (T1)
+    kind: str = "reference"             # reference (T0) / value (T1) / user (T2)
     text: str = ""
     x: float = 0.0
     y: float = 0.0
-    width: float = 1.524
-    height: float = 1.524
-    rotation: float = 0.0
+    width: float = 1.524                # W (в файле идёт ВТОРЫМ после H)
+    height: float = 1.524               # H (в файле идёт ПЕРВЫМ)
+    rotation: float = 0.0               # градусы (в файле 0.1°)
     thickness: float = 0.3048
     mirror: bool = False                # M/N
     visible: bool = True                # V/I
@@ -96,7 +94,7 @@ class FpArc:
     cy: float = 0.0
     sx: float = 0.0
     sy: float = 0.0
-    angle: float = 90.0                 # градусы
+    angle: float = 90.0                 # в градусах (в файле — 0.1°)
     width: float = 0.381
     layer: str = "F.SilkS"
     extra: list[str] = field(default_factory=list)
@@ -110,10 +108,14 @@ class Footprint:
     po_x: int = 0
     po_y: int = 0
     po_rotation: int = 0
-    po_layer: int = 15                  # 15 = B.Cu — «низ» по умолчанию как в KiCad
-    po_tstamp: str = "00000000"
-    po_flags: str = "00000000"
-    po_misc: str = "~~"
+    po_layer: int = 15                  # 15 = B.Cu — как в KiCad по умолчанию
+    po_tstamp: str = "00000000"         # Tedit (hex)
+    po_flags: str = "00000000"          # Tstamp (обычно всегда нули)
+    po_misc: str = "~~"                 # Attributes (2 символа, обычно ~~)
+
+    # строки идентификации модуля — идут в этом порядке после Li
+    description: str = ""               # Cd
+    keywords: str = ""                  # Kw
 
     sc: str = "00000000"
     ar: str = ""
@@ -125,7 +127,7 @@ class Footprint:
     arcs: list[FpArc] = field(default_factory=list)
     pads: list[Pad] = field(default_factory=list)
 
-    # неизвестные строки внутри $MODULE
+    # неизвестные строки внутри $MODULE (в т.ч. $SHAPE3D, DP/Dl и т.п.)
     extra: list[str] = field(default_factory=list)
 
 

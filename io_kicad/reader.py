@@ -89,6 +89,12 @@ def _read_module_line(fp: Footprint, s: str) -> None:
         if len(rest) >= 7: fp.po_misc = " ".join(rest[6:])
     elif tag == "Li":
         if rest: fp.name = " ".join(rest)
+    elif tag == "Cd":
+        # Описание модуля. Строка идёт сразу после Li, часто без кавычек.
+        fp.description = " ".join(rest)
+    elif tag == "Kw":
+        # Ключевые слова. Тоже сразу после Li (после Cd).
+        fp.keywords = " ".join(rest)
     elif tag == "Sc":
         fp.sc = " ".join(rest)
     elif tag == "AR":
@@ -96,7 +102,7 @@ def _read_module_line(fp: Footprint, s: str) -> None:
     elif tag == "Op":
         fp.op = " ".join(rest)
     elif tag in ("T0", "T1", "T2"):
-        # T0 = reference, T1 = value, T2 = пользовательская надпись KiForge
+        # T0 = reference, T1 = value, T2 = user-текст
         _read_text(fp, tag, rest)
     elif tag == "DS":
         _read_ds(fp, rest)
@@ -127,16 +133,22 @@ def _parse_quoted(s: str):
 
 
 def _read_text(fp, tag, rest):
-    # T0/T1/T2 x y w h rot thick N|M V|I layer N|I "text"
+    """Разобрать строку T0/T1/T2.
+
+    Формат (legacy KiCad):
+        T<kind> X Y H W A Pen Mirror Visible Layer Italic "Text"
+    H — высота символа, W — ширина. ВАЖНО: H идёт ПЕРВЫМ.
+    Угол A — в 0.1°, поэтому делим на 10.
+    """
     if len(rest) < 9:
         fp.extra.append(f"{tag} " + " ".join(rest)); return
     t = FpText()
     t.kind = {"T0": "reference", "T1": "value", "T2": "user"}.get(tag, "value")
     t.x = units_to_mm(parse_int(rest[0]))
     t.y = units_to_mm(parse_int(rest[1]))
-    t.width = units_to_mm(parse_int(rest[2]))
-    t.height = units_to_mm(parse_int(rest[3]))
-    t.rotation = float(parse_int(rest[4]))
+    t.height = units_to_mm(parse_int(rest[2]))   # H — первым
+    t.width = units_to_mm(parse_int(rest[3]))    # W — вторым
+    t.rotation = parse_int(rest[4]) / 10.0       # 0.1° → градусы
     t.thickness = units_to_mm(parse_int(rest[5]))
     t.mirror = rest[6].upper() == "M"
     t.visible = rest[7].upper() != "I"
@@ -175,6 +187,12 @@ def _read_dc(fp, rest):
 
 
 def _read_da(fp, rest):
+    """Дуга. Формат: DA X Y Xp Yp Angle Pen Layer.
+
+    X,Y — центр базовой окружности; Xp,Yp — начальная точка дуги
+    (задаёт радиус и стартовый угол); Angle — угловой размах в 0.1°.
+    Храним угол в градусах.
+    """
     if len(rest) < 7:
         fp.extra.append("DA " + " ".join(rest)); return
     a = FpArc()
@@ -182,7 +200,7 @@ def _read_da(fp, rest):
     a.cy = units_to_mm(parse_int(rest[1]))
     a.sx = units_to_mm(parse_int(rest[2]))
     a.sy = units_to_mm(parse_int(rest[3]))
-    a.angle = float(parse_int(rest[4]))
+    a.angle = parse_int(rest[4]) / 10.0          # 0.1° → градусы
     a.width = units_to_mm(parse_int(rest[5]))
     a.layer = parse_layer(rest[6])
     fp.arcs.append(a)
@@ -225,8 +243,9 @@ def _read_pad_sh(pad, rest):
     if len(parts) >= 1: pad.shape = parts[0].upper()
     if len(parts) >= 2: pad.width = units_to_mm(parse_int(parts[1]))
     if len(parts) >= 3: pad.height = units_to_mm(parse_int(parts[2]))
-    if len(parts) >= 4: pad.pad_dx = parse_int(parts[3])
-    if len(parts) >= 5: pad.pad_dy = parse_int(parts[4])
+    # В файле порядок Ydelta Xdelta (см. PDF), не Xdelta Ydelta.
+    if len(parts) >= 4: pad.pad_dx = parse_int(parts[3])   # Ydelta
+    if len(parts) >= 5: pad.pad_dy = parse_int(parts[4])   # Xdelta
     if len(parts) >= 6: pad.pad_angle = parse_int(parts[5])
 
 
@@ -234,12 +253,18 @@ def _read_pad_dr(pad, rest):
     """Разобрать строку 'Dr' пада.
 
     Формат legacy KiCad (единицы 0.1 мил):
-        Dr <size> <x_off> <y_off>              # круглое отверстие
+        Dr <size> <x_off> <y_off>              # круглое
         Dr <size> <x_off> <y_off> O <w> <h>    # овальное (slot)
 
-    <size> — диаметр круглого отверстия; <x_off>/<y_off> — смещение центра
-    отверстия относительно центра пада. Для слота реальные габариты
-    задаются парой <w>/<h> после буквы "O"; <size> при этом игнорируется.
+    <size> — диаметр отверстия; <x_off>/<y_off> — смещения центра
+    отверстия относительно центра пада.
+
+    ВАЖНО: в legacy-формате оба смещения хранятся с ОБРАТНЫМИ знаками
+    относительно «естественного» направления, которое видит пользователь
+    на канве (X+ = вправо, Y+ = вниз). В файле положительный X означает
+    влево, положительный Y — вверх. KiCad сам компенсирует это при
+    чтении/записи; делаем то же самое, чтобы направление смещения,
+    нарисованное в редакторе, совпадало с тем, что покажет KiCad.
     """
     parts = rest.split()
     if not parts:
@@ -255,14 +280,14 @@ def _read_pad_dr(pad, rest):
     if len(parts) >= 4 and parts[3].upper() == "O":
         w = parse_int(parts[4], 0) if len(parts) >= 5 else 0
         h = parse_int(parts[5], 0) if len(parts) >= 6 else 0
-        # Для нашего редактора достаточно знать «эффективный диаметр» —
-        # меньшее измерение слота. Смещение остаётся тем же.
-        cands = [x for x in (w, h) if x > 0]
+        # Для редактора достаточно «эффективного диаметра» — меньшей
+        # стороны слота. Смещение остаётся тем же.
+        cands = [v for v in (w, h) if v > 0]
         size = min(cands) if cands else 0
 
     pad.drill = units_to_mm(size) if size > 0 else None
-    pad.drill_offset_x = units_to_mm(off_x)
-    pad.drill_offset_y = units_to_mm(off_y)
+    pad.drill_offset_x = units_to_mm(-off_x)
+    pad.drill_offset_y = units_to_mm(-off_y)
 
 
 def _read_pad_at(pad, rest):
