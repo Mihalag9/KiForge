@@ -685,8 +685,15 @@ class FootprintView(QGraphicsView):
         sel = [it for it in self._scene.selectedItems() if isinstance(it, DRAGGABLE)]
         if not sel: return False
         origins = {id(it): self._snapshot(it) for it in sel}
-        self._group_drag = {"start": sp, "items": sel, "origins": origins,
-                            "last_dx": 0.0, "last_dy": 0.0}
+        # Якорь — элемент, за который схватили мышью. Его позицию будем
+        # снапить к сетке, а остальных сдвигать на получившуюся разницу,
+        # чтобы группа двигалась жёстко и не рассыпалась.
+        ax, ay = hit.pos().x(), hit.pos().y()
+        self._group_drag = {
+            "start": sp, "items": sel, "origins": origins,
+            "anchor_orig": (ax, ay),
+            "last_dx": 0.0, "last_dy": 0.0,
+        }
         return True
 
     def _snapshot(self, it):
@@ -710,13 +717,26 @@ class FootprintView(QGraphicsView):
 
     def _update_group_drag(self, sp):
         start = self._group_drag["start"]
+        raw_dx = sp.x() - start.x()
+        raw_dy = sp.y() - start.y()
+
         if self._scene.snap_to_grid:
             step = self._scene.grid_step
-            dx = round((sp.x() - start.x()) / step) * step
-            dy = round((sp.y() - start.y()) / step) * step
+            ax, ay = self._group_drag["anchor_orig"]
+            # Куда бы встал якорь без снапа — и потом округляем эту
+            # АБСОЛЮТНУЮ позицию к сетке. Отсюда получаем снапнутое
+            # смещение группы. Так объект всегда встаёт на узел, а не
+            # «прыгает относительно старого места».
+            target_x = ax + raw_dx
+            target_y = ay + raw_dy
+            snapped_x = round(target_x / step) * step
+            snapped_y = round(target_y / step) * step
+            dx = snapped_x - ax
+            dy = snapped_y - ay
         else:
-            dx = round(sp.x() - start.x(), FREE_ROUND_DIGITS)
-            dy = round(sp.y() - start.y(), FREE_ROUND_DIGITS)
+            dx = round(raw_dx, FREE_ROUND_DIGITS)
+            dy = round(raw_dy, FREE_ROUND_DIGITS)
+
         self._group_drag["last_dx"] = dx
         self._group_drag["last_dy"] = dy
         for it in self._group_drag["items"]:
