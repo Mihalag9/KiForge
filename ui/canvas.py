@@ -5,19 +5,20 @@ import math
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import (QBrush, QColor, QFont, QFontMetricsF, QPainter,
                            QPainterPath, QPen, QTransform)
-from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem,
-                               QGraphicsLineItem, QGraphicsPathItem,
-                               QGraphicsScene, QGraphicsSimpleTextItem,
-                               QGraphicsView, QStyle,
-                               QStyleOptionGraphicsItem)
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGraphicsEllipseItem,
+                               QGraphicsItem, QGraphicsLineItem,
+                               QGraphicsPathItem, QGraphicsScene,
+                               QGraphicsSimpleTextItem, QGraphicsView, QLabel,
+                               QLineEdit, QStyle, QStyleOptionGraphicsItem,
+                               QVBoxLayout)
 
 from core.arc_math import arc_points_from_center
 from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
-                           AddPadCommand, MoveManyCommand, RemoveArcCommand,
-                           RemoveCircleCommand, RemoveLineCommand,
-                           RemovePadCommand, RemoveTextCommand,
-                           SetOriginCommand)
-from core.footprint import (Footprint, FpArc, FpCircle, FpLine, Pad,
+                           AddPadCommand, AddTextCommand, MoveManyCommand,
+                           RemoveArcCommand, RemoveCircleCommand,
+                           RemoveLineCommand, RemovePadCommand,
+                           RemoveTextCommand, SetOriginCommand)
+from core.footprint import (Footprint, FpArc, FpCircle, FpLine, FpText, Pad,
                             next_pad_number)
 
 
@@ -55,16 +56,21 @@ PREVIEW_COLOR  = QColor("#ffffff")
 PAD_NUM_COLOR  = QColor("#ffffff")
 PAD_COLOR      = QColor("#c14a4a")
 
-# Округление координат при свободном (без привязки) позиционировании.
-# 4 знака после запятой = 0.1 мкм — с запасом покрывает точность .mod
-# (1 unit = 0.00254 мм ≈ 5 знаков) и не даёт копить float-мусор.
+GHOST_TEXT_COLOR = QColor("#808a99")
+
 FREE_ROUND_DIGITS = 4
 
 # --- Индикатор выделения ---------------------------------------------------
-SELECTION_COLOR  = QColor("#4d6bfe")  # акцентный синий, как у осей координат
-SELECTION_PAD_MM = 1.0                # запас в boundingRect под рамку (мм)
-SELECTION_GAP_PX = 3.0                # визуальный отступ рамки (экранные пиксели)
-HANDLE_PX        = 4.0                # сторона квадратного маркера (пиксели)
+SELECTION_COLOR  = QColor("#4d6bfe")
+SELECTION_PAD_MM = 1.0
+SELECTION_GAP_PX = 3.0
+HANDLE_PX        = 4.0
+
+DEFAULT_TEXT = "Текст"
+
+# Типы текстов, которые нельзя удалять: они критичны для KiCad (T0/T1).
+# Пользовательские надписи (kind="user") удаляются как обычно.
+PROTECTED_TEXT_KINDS = frozenset({"reference", "value"})
 
 
 def _layer_qcolor(layer: str) -> QColor:
@@ -92,7 +98,7 @@ def _pad_path(shape: str, w: float, h: float) -> QPainterPath:
     elif shape == "O":
         r = min(hw, hh)
         path.addRoundedRect(QRectF(-hw, -hh, w, h), r, r)
-    else:   # "R" и "T" — прямоугольник (T трапецией позже)
+    else:
         path.addRect(QRectF(-hw, -hh, w, h))
     return path
 
@@ -119,21 +125,17 @@ def _fit_pad_number(text, w, h, target_mm=1.0):
     return sc, cap * sc
 
 
+def _is_protected_text(text_obj) -> bool:
+    """Текст относится к reference/value — его нельзя удалять из модуля."""
+    return getattr(text_obj, "kind", "") in PROTECTED_TEXT_KINDS
+
+
 # --------------------------------------------------------------------------
 # Индикатор выделения
 # --------------------------------------------------------------------------
 
 def _draw_selection(item, painter, option):
-    """Кастомный индикатор выделения: пунктир по контуру + маркеры углов.
-
-    Стандартный индикатор Qt — пунктирный прямоугольник по boundingRect() —
-    у вытянутых и тонких фигур (линия, дуга) сливается с самим элементом,
-    а у окружностей выглядит как «случайный квадрат». Здесь рамка идёт по
-    реальному видимому контуру элемента (с учётом толщины пера) с
-    постоянным визуальным отступом, а по углам нарисованы квадратные
-    маркеры. Толщина рамки и сторона маркеров задаются в экранных
-    пикселях, поэтому при любом масштабе вида выглядят одинаково.
-    """
+    """Кастомный индикатор выделения: пунктир по контуру + маркеры углов."""
     if not (option.state & QStyle.StateFlag.State_Selected):
         return
 
@@ -146,7 +148,6 @@ def _draw_selection(item, painter, option):
 
     painter.save()
 
-    # Пунктирная рамка — 1 пиксель экрана независимо от зума.
     pen = QPen(SELECTION_COLOR)
     pen.setCosmetic(True)
     pen.setWidthF(1.0)
@@ -155,7 +156,6 @@ def _draw_selection(item, painter, option):
     painter.setBrush(Qt.NoBrush)
     painter.drawRect(rect)
 
-    # Угловые маркеры — HANDLE_PX пикселей экрана.
     s = HANDLE_PX / lod
     painter.setPen(Qt.NoPen)
     painter.setBrush(SELECTION_COLOR)
@@ -167,16 +167,9 @@ def _draw_selection(item, painter, option):
 
 
 class _SelectableMixin:
-    """Общая логика выделения для всех графических элементов модуля.
-
-    * ``_content_rect()`` — реальный видимый контур (с учётом пера);
-    * ``boundingRect()`` — тот же контур + запас под рамку;
-    * ``paint()`` — подавляет стандартный индикатор Qt и вызывает
-      ``_draw_selection`` для кастомного.
-    """
+    """Общая логика выделения для всех графических элементов модуля."""
 
     def _content_rect(self) -> QRectF:
-        """Границы по видимому контуру (с учётом толщины пера)."""
         return super().boundingRect()
 
     def boundingRect(self) -> QRectF:
@@ -184,17 +177,54 @@ class _SelectableMixin:
         return self._content_rect().adjusted(-m, -m, m, m)
 
     def paint(self, painter, option, widget=None):
-        # ВАЖНО: используем КОПИРУЮЩИЙ конструктор, а не ручное
-        # конструирование QStyleOptionGraphicsItem(). «Пустой» option в
-        # PySide6 имеет неинициализированные state/exposedRect, из-за
-        # чего базовые QGraphicsXxxItem.paint() молча ничего не рисуют.
-        # Копия наследует все поля реального option'а Qt; снимаем только
-        # флаг State_Selected, чтобы Qt не рисовал свой пунктирный
-        # прямоугольник поверх нашей кастомной рамки.
         opt = QStyleOptionGraphicsItem(option)
         opt.state = opt.state & ~QStyle.StateFlag.State_Selected
         super().paint(painter, opt, widget)
         _draw_selection(self, painter, option)
+
+
+# --------------------------------------------------------------------------
+# Диалог ввода текста
+# --------------------------------------------------------------------------
+
+class _NewTextDialog(QDialog):
+    """Модальное окно для инструмента «Текст»."""
+
+    def __init__(self, parent=None, default: str = DEFAULT_TEXT):
+        super().__init__(parent)
+        self.setWindowTitle("Новый текст")
+        self.setModal(True)
+        self.setMinimumWidth(340)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        root.addWidget(QLabel("Текст:"))
+
+        self.edit = QLineEdit(default)
+        self.edit.selectAll()
+        root.addWidget(self.edit)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Создать")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("Отмена")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+        self._ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.edit.textChanged.connect(self._refresh_ok_state)
+        self._refresh_ok_state(default)
+
+    def _refresh_ok_state(self, *_):
+        self._ok.setEnabled(bool(self.edit.text().strip()))
+
+    def text_value(self) -> str:
+        return self.edit.text()
 
 
 # --------------------------------------------------------------------------
@@ -310,6 +340,15 @@ class ArcItem(_SelectableMixin, QGraphicsPathItem):
 
 
 class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
+    """Текстовый элемент модуля.
+
+    Если ``text_obj.visible == False`` (в .mod хранится как флаг I), в
+    редакторе элемент остаётся видимым, но рисуется приглушённым серым —
+    «ghost»-стиль. Так пользователь видит, что объект есть, может его
+    выделить и вернуть к обычному виду через чекбокс «Видим» в панели
+    свойств. В файл при этом по-прежнему уходит флаг I.
+    """
+
     def __init__(self, t, fp: Footprint):
         super().__init__()
         self.text_obj = t
@@ -324,7 +363,12 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
         fm = QFontMetricsF(font)
         cap = fm.capHeight() or 70.0
         sc = (self.text_obj.height if self.text_obj.height > 0 else 1.0) / cap
-        self.setBrush(QBrush(_layer_qcolor(self.text_obj.layer)))
+
+        if self.text_obj.visible:
+            self.setBrush(QBrush(_layer_qcolor(self.text_obj.layer)))
+        else:
+            self.setBrush(QBrush(GHOST_TEXT_COLOR))
+
         self.setPos(self.text_obj.x, self.text_obj.y)
         br = self.boundingRect(); c = br.center()
         tr = QTransform(); tr.rotate(-self.text_obj.rotation)
@@ -337,11 +381,7 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
 # --------------------------------------------------------------------------
 
 class FootprintScene(QGraphicsScene):
-    """Сцена модуля. Хранит состояние сетки и привязки к ней.
-
-    ``snap_to_grid`` управляется извне (MainWindow) синхронно с
-    ``grid_visible``: когда сетка выключена, привязка тоже выключена.
-    """
+    """Сцена модуля. Хранит состояние сетки и привязки к ней."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.grid_step = 1.0
@@ -486,14 +526,22 @@ class FootprintView(QGraphicsView):
             item.setPos(p.x, p.y)
             if ("pad", id(p)) in selected: item.setSelected(True)
         for t in self.footprint.texts:
-            if not t.visible: continue
             item = TextItem(t, self.footprint); self._scene.addItem(item)
             if ("text", id(t)) in selected: item.setSelected(True)
 
         self._apply_layer_visibility()
 
+    # --- удаление ---
     def delete_selected(self):
-        if self.cmd_stack is None or self.footprint is None: return
+        """Удалить выделенные элементы.
+
+        Reference и value текста пропускаются: без них модуль в KiCad
+        перестанет нормально открываться (не подставится обозначение и
+        номинал). Пользовательские тексты удаляются как раньше.
+        """
+        if self.cmd_stack is None or self.footprint is None:
+            return
+        skipped_protected = 0
         for it in list(self._scene.selectedItems()):
             if isinstance(it, PadItem):
                 self.cmd_stack.push(RemovePadCommand(self.footprint, it.pad))
@@ -504,7 +552,25 @@ class FootprintView(QGraphicsView):
             elif isinstance(it, ArcItem):
                 self.cmd_stack.push(RemoveArcCommand(self.footprint, it.arc))
             elif isinstance(it, TextItem):
+                if _is_protected_text(it.text_obj):
+                    skipped_protected += 1
+                    continue
                 self.cmd_stack.push(RemoveTextCommand(self.footprint, it.text_obj))
+
+        if skipped_protected:
+            self._notify_protected(skipped_protected)
+
+    def _notify_protected(self, count: int):
+        """Сообщить пользователю, что reference/value удалять нельзя."""
+        msg = (f"Текст «обозначение»/«значение» удалить нельзя "
+               f"({count} пропущено) — это обязательные поля KiCad.")
+        scene = self.scene()
+        if scene is not None and scene.views():
+            view = scene.views()[0]
+            win = view.window()
+            status = getattr(win, "statusBar", None)
+            if callable(status):
+                status().showMessage(msg, 3500)
 
     # --- зум ---
     def wheelEvent(self, ev):
@@ -526,8 +592,6 @@ class FootprintView(QGraphicsView):
             if ev.button() == Qt.LeftButton:
                 sp = self.mapToScene(ev.position().toPoint())
                 if self.current_tool == "delete":
-                    # Для удаления используем точную позицию — файловые элементы
-                    # обычно не лежат на сетке, снап может увести клик за их пределы.
                     self._tool_delete(sp)
                 else:
                     self._handle_tool_click(self._snap(sp))
@@ -616,8 +680,6 @@ class FootprintView(QGraphicsView):
             dx = round((sp.x() - start.x()) / step) * step
             dy = round((sp.y() - start.y()) / step) * step
         else:
-            # Свободное перетаскивание: без округления к шагу сетки,
-            # только срезаем float-хвост до 0.1 мкм.
             dx = round(sp.x() - start.x(), FREE_ROUND_DIGITS)
             dy = round(sp.y() - start.y(), FREE_ROUND_DIGITS)
         self._group_drag["last_dx"] = dx
@@ -660,6 +722,7 @@ class FootprintView(QGraphicsView):
         elif t == "line":    self._tool_two_point(pos, "line")
         elif t == "circle":  self._tool_two_point(pos, "circle")
         elif t == "arc":     self._tool_arc(pos)
+        elif t == "text":    self._tool_add_text(pos)
         elif t == "anchor":  self._tool_set_anchor(pos)
         elif t == "delete":  self._tool_delete(pos)
 
@@ -688,21 +751,39 @@ class FootprintView(QGraphicsView):
         self._pending_points.append(pos)
         if len(self._pending_points) == 3:
             p0, p1, p2 = self._pending_points
-            # p0 = центр, p1 = начало, p2 = точка для определения направления
             cx, cy = p0.x(), p0.y()
             a0 = math.atan2(p1.y() - cy, p1.x() - cx)
             a2 = math.atan2(p2.y() - cy, p2.x() - cx)
-            # берём разницу в пределах [-180, 180] и округляем до целого
             ang = math.degrees((a2 - a0 + math.pi) % (2 * math.pi) - math.pi)
             arc = FpArc(cx=cx, cy=cy, sx=p1.x(), sy=p1.y(),
                         angle=ang, layer=self.default_graphics_layer)
             self._cancel_pending()
             self._push_command(AddArcCommand(self.footprint, arc))
 
+    def _tool_add_text(self, pos):
+        dlg = _NewTextDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        text = dlg.text_value()
+        if not text.strip():
+            return
+        item = FpText(
+            kind="user",
+            text=text,
+            x=pos.x(),
+            y=pos.y(),
+            layer=self.default_graphics_layer,
+        )
+        self._push_command(AddTextCommand(self.footprint, item))
+
     def _tool_set_anchor(self, pos):
         self._push_command(SetOriginCommand(self.footprint, pos.x(), pos.y()))
 
     def _tool_delete(self, pos):
+        """Удалить верхний элемент под курсором.
+
+        Reference/value пропускаются: это обязательные поля KiCad.
+        """
         for it in self._scene.items(pos):
             if isinstance(it, PadItem):
                 self._push_command(RemovePadCommand(self.footprint, it.pad)); return
@@ -713,6 +794,9 @@ class FootprintView(QGraphicsView):
             if isinstance(it, ArcItem):
                 self._push_command(RemoveArcCommand(self.footprint, it.arc)); return
             if isinstance(it, TextItem):
+                if _is_protected_text(it.text_obj):
+                    self._notify_protected(1)
+                    return
                 self._push_command(RemoveTextCommand(self.footprint, it.text_obj)); return
 
     # --- предпросмотр ---
@@ -758,13 +842,6 @@ class FootprintView(QGraphicsView):
 
     # --- утилиты ---
     def _snap(self, pos):
-        """Привязка к сетке, если она включена.
-
-        Когда сетка выключена (``scene.snap_to_grid`` = False),
-        координаты возвращаются «как есть», только с округлением до
-        0.1 мкм — иначе серия кликов накапливала бы float-мусор
-        в dataclass-полях модели.
-        """
         if not self._scene.snap_to_grid:
             return QPointF(round(pos.x(), FREE_ROUND_DIGITS),
                            round(pos.y(), FREE_ROUND_DIGITS))

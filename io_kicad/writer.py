@@ -63,7 +63,19 @@ def _module_lines(fp: Footprint) -> list[str]:
 
 
 def _text_line(t: FpText) -> str:
-    tag = "T0" if t.kind == "reference" else "T1"
+    """Строка T0/T1/T2.
+
+    T0 — reference (позиционное обозначение),
+    T1 — value (номинал),
+    T2 — пользовательская надпись KiForge (kind="user" и любые будущие
+    расширения, не совпадающие с первыми двумя).
+    """
+    if t.kind == "reference":
+        tag = "T0"
+    elif t.kind == "value":
+        tag = "T1"
+    else:
+        tag = "T2"
     mirror = "M" if t.mirror else "N"
     visible = "V" if t.visible else "I"
     italic = "I" if t.italic else "N"

@@ -14,6 +14,13 @@ from ui.layers_panel import KICAD_LAYERS
 _ELEMENT_LAYERS: list[str] = [name for name, _color in KICAD_LAYERS
                               if name != "Pad.Num"]
 
+# Отображаемые имена типов текстовых элементов.
+_TEXT_KIND_LABELS = {
+    "reference": "обозначение",
+    "value": "значение",
+    "user": "текст",
+}
+
 
 class PropertiesPanel(QWidget):
     def __init__(self):
@@ -208,8 +215,7 @@ class PropertiesPanel(QWidget):
             self._loading = False
         elif isinstance(it, TextItem):
             self.item = it.text_obj
-            kind_name = {"reference": "обозначение", "value": "значение"}\
-                .get(it.text_obj.kind, it.text_obj.kind)
+            kind_name = _TEXT_KIND_LABELS.get(it.text_obj.kind, it.text_obj.kind)
             self.title.setText(f"Текст ({kind_name})")
             self._show(self._text_w, True)
             self._loading = True

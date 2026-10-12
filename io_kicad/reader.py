@@ -95,7 +95,8 @@ def _read_module_line(fp: Footprint, s: str) -> None:
         fp.ar = " ".join(rest)
     elif tag == "Op":
         fp.op = " ".join(rest)
-    elif tag in ("T0", "T1"):
+    elif tag in ("T0", "T1", "T2"):
+        # T0 = reference, T1 = value, T2 = пользовательская надпись KiForge
         _read_text(fp, tag, rest)
     elif tag == "DS":
         _read_ds(fp, rest)
@@ -126,11 +127,11 @@ def _parse_quoted(s: str):
 
 
 def _read_text(fp, tag, rest):
-    # T0 x y w h rot thick N|M V|I layer N|I "text"
+    # T0/T1/T2 x y w h rot thick N|M V|I layer N|I "text"
     if len(rest) < 9:
         fp.extra.append(f"{tag} " + " ".join(rest)); return
     t = FpText()
-    t.kind = "reference" if tag == "T0" else "value"
+    t.kind = {"T0": "reference", "T1": "value", "T2": "user"}.get(tag, "value")
     t.x = units_to_mm(parse_int(rest[0]))
     t.y = units_to_mm(parse_int(rest[1]))
     t.width = units_to_mm(parse_int(rest[2]))
