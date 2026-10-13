@@ -1,5 +1,6 @@
 """Канва: сцена с сеткой, слоями, инструментами, групповым drag."""
 from __future__ import annotations
+import copy
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
@@ -14,10 +15,11 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGraphicsEllipseItem,
 
 from core.arc_math import arc_points_from_center
 from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
-                           AddPadCommand, AddTextCommand, MoveManyCommand,
-                           RemoveArcCommand, RemoveCircleCommand,
-                           RemoveLineCommand, RemovePadCommand,
-                           RemoveTextCommand, SetOriginCommand)
+                           AddPadCommand, AddTextCommand, MacroCommand,
+                           MoveManyCommand, RemoveArcCommand,
+                           RemoveCircleCommand, RemoveLineCommand,
+                           RemovePadCommand, RemoveTextCommand,
+                           SetOriginCommand)
 from core.footprint import (Footprint, FpArc, FpCircle, FpLine, FpText, Pad,
                             next_pad_number)
 
@@ -571,19 +573,109 @@ class FootprintView(QGraphicsView):
                 self.cmd_stack.push(RemoveTextCommand(self.footprint, it.text_obj))
 
         if skipped_protected:
-            self._notify_protected(skipped_protected)
+            self._notify_protected(skipped_protected, verb="удалить")
 
-    def _notify_protected(self, count: int):
-        """Сообщить пользователю, что reference/value удалять нельзя."""
-        msg = (f"Текст «обозначение»/«значение» удалить нельзя "
+    # --- дублирование ---
+    def duplicate_selected(self):
+        """Ctrl+D: скопировать выделенные элементы со смещением на шаг сетки.
+
+        Reference и value не дублируются — в .mod может быть только один T0
+        и один T1; второй сделает модуль невалидным для KiCad. Остальные
+        элементы копируются, номера новых падов продолжают нумерацию без
+        конфликтов со старыми. Все копии добавляются одной MacroCommand,
+        поэтому Ctrl+Z снимает всю операцию целиком.
+        """
+        if self.cmd_stack is None or self.footprint is None:
+            return
+
+        selected = [it for it in self._scene.selectedItems()
+                    if isinstance(it, DRAGGABLE)]
+        if not selected:
+            return
+
+        # Смещение = текущий шаг сетки. Если привязка выключена — берём
+        # мягкий дефолт 0.254 мм, чтобы копия не легла ровно на оригинал.
+        step = self._scene.grid_step if self._scene.snap_to_grid else 0.254
+        dx = dy = step
+
+        # Свободный номер для следующего пада. Считаем заранее: в цикле
+        # footprint ещё не содержит копий, поэтому next_pad_number() вернёт
+        # одно и то же значение при каждом вызове.
+        max_n = 0
+        for p in self.footprint.pads:
+            try:
+                max_n = max(max_n, int(str(p.number).strip()))
+            except (TypeError, ValueError):
+                pass
+
+        sub: list = []
+        skipped_protected = 0
+
+        for it in selected:
+            if isinstance(it, PadItem):
+                clone = copy.deepcopy(it.pad)
+                clone.x += dx
+                clone.y += dy
+                max_n += 1
+                clone.number = str(max_n)
+                sub.append(AddPadCommand(self.footprint, clone))
+            elif isinstance(it, LineItem):
+                clone = copy.deepcopy(it.line)
+                clone.x1 += dx; clone.y1 += dy
+                clone.x2 += dx; clone.y2 += dy
+                sub.append(AddLineCommand(self.footprint, clone))
+            elif isinstance(it, CircleItem):
+                clone = copy.deepcopy(it.circle)
+                clone.cx += dx; clone.cy += dy
+                clone.ex += dx; clone.ey += dy
+                sub.append(AddCircleCommand(self.footprint, clone))
+            elif isinstance(it, ArcItem):
+                clone = copy.deepcopy(it.arc)
+                clone.cx += dx; clone.cy += dy
+                clone.sx += dx; clone.sy += dy
+                sub.append(AddArcCommand(self.footprint, clone))
+            elif isinstance(it, TextItem):
+                if _is_protected_text(it.text_obj):
+                    skipped_protected += 1
+                    continue
+                clone = copy.deepcopy(it.text_obj)
+                clone.x += dx
+                clone.y += dy
+                sub.append(AddTextCommand(self.footprint, clone))
+
+        if sub:
+            self._push_command(MacroCommand("Дублировать", sub))
+            # После push cmd_stack.do() модель изменилась, а on_change
+            # синхронно вызвал rebuild() — сцена уже пересобрана. Значит
+            # можно искать новые items среди уже существующих.
+            new_ids = set()
+            for c in sub:
+                obj = getattr(c, "obj", None)
+                if obj is not None:
+                    new_ids.add(id(obj))
+            self._scene.clearSelection()
+            for it in self._scene.items():
+                for attr in ("pad", "line", "circle", "arc", "text_obj"):
+                    m = getattr(it, attr, None)
+                    if m is not None and id(m) in new_ids:
+                        it.setSelected(True)
+                        break
+
+        if skipped_protected:
+            self._notify_protected(skipped_protected, verb="дублировать")
+
+    def _notify_protected(self, count: int, verb: str = "удалить"):
+        """Сообщить пользователю, что reference/value нельзя удалить/дублировать."""
+        msg = (f"Текст «обозначение»/«значение» {verb} нельзя "
                f"({count} пропущено) — это обязательные поля KiCad.")
         scene = self.scene()
-        if scene is not None and scene.views():
-            view = scene.views()[0]
-            win = view.window()
-            status = getattr(win, "statusBar", None)
-            if callable(status):
-                status().showMessage(msg, 3500)
+        if scene is not None:
+            for view in scene.views():
+                win = view.window()
+                status = getattr(win, "statusBar", None)
+                if callable(status):
+                    status().showMessage(msg, 3500)
+                    return
 
     # --- зум ---
     def wheelEvent(self, ev):

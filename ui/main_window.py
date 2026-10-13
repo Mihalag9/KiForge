@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence
 from PySide6.QtWidgets import (QComboBox, QDialog, QDockWidget, QFileDialog,
                                QFrame, QInputDialog, QLabel, QMainWindow,
                                QMenu, QMessageBox, QPushButton, QStackedWidget,
@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self.dock_props.setVisible(has)
         self.dock_layers.setVisible(has)
         self.menu_view.menuAction().setVisible(has)
+        self.menu_edit.menuAction().setVisible(has)
 
         if not has:
             self.stack.setCurrentWidget(self.welcome)
@@ -363,32 +364,77 @@ class MainWindow(QMainWindow):
         self._doc_actions: list[QAction] = []
 
         m = mb.addMenu("Файл")
-        self._act(m, "Новая библиотека…", self.new_library)
-        self._act(m, "Открыть…", self.open_file)
+        # Ctrl+N / Ctrl+O работают всегда, даже без загруженной библиотеки,
+        # поэтому не добавляем их в _doc_actions (которые гасятся без документа).
+        self._act(m, "Новая библиотека…", self.new_library, shortcuts="Ctrl+N")
+        self._act(m, "Открыть…", self.open_file, shortcuts="Ctrl+O")
         m.addSeparator()
-        self._doc_actions.append(self._act(m, "Сохранить", self.save_file))
-        self._doc_actions.append(self._act(m, "Сохранить как…", self.save_file_as))
+        self._doc_actions.append(
+            self._act(m, "Сохранить", self.save_file, shortcuts="Ctrl+S"))
+        self._doc_actions.append(
+            self._act(m, "Сохранить как…", self.save_file_as,
+                      shortcuts="Ctrl+Shift+S"))
         m.addSeparator()
         self._doc_actions.append(self._act(m, "Открыть модуль…", self.add_modules))
-        self._doc_actions.append(self._act(m, "Создать модуль…", self.add_module))
+        self._doc_actions.append(
+            self._act(m, "Создать модуль…", self.add_module,
+                      shortcuts="Ctrl+Shift+N"))
         self._doc_actions.append(self._act(m, "Переименовать модуль…",
                                            self.rename_module))
         self._doc_actions.append(self._act(m, "Удалить модуль…", self.delete_module))
         m.addSeparator()
         self._act(m, "Выход", self.close)
 
+        m = mb.addMenu("Правка")
+        self.menu_edit = m
+        self._doc_actions.append(
+            self._act(m, "Отменить", self.undo, shortcuts="Ctrl+Z"))
+        self._doc_actions.append(
+            self._act(m, "Повторить", self.redo,
+                      shortcuts=["Ctrl+Y", "Ctrl+Shift+Z"]))
+        m.addSeparator()
+        self._doc_actions.append(
+            self._act(m, "Дублировать", self.duplicate_selected,
+                      shortcuts="Ctrl+D"))
+
         m = mb.addMenu("Вид")
         self.menu_view = m
         self._doc_actions.append(self._act(m, "Сетка вкл/выкл", self.toggle_grid))
         self._doc_actions.append(self._act(m, "Править сетку…", self._edit_user_grid))
         m.addSeparator()
-        self._doc_actions.append(self._act(m, "Приблизить", self._zoom_in))
-        self._doc_actions.append(self._act(m, "Отдалить", self._zoom_out))
-        self._doc_actions.append(self._act(m, "Сброс масштаба", self._zoom_reset))
+        # Ctrl+= покрывает раскладки, где "+" требует Shift; Qt нормализует
+        # оба варианта в один и тот же аккорд, поэтому оставляем оба для
+        # надёжности на разных клавиатурах.
+        self._doc_actions.append(
+            self._act(m, "Приблизить", self._zoom_in,
+                      shortcuts=["Ctrl+=", "Ctrl++"]))
+        self._doc_actions.append(
+            self._act(m, "Отдалить", self._zoom_out, shortcuts="Ctrl+-"))
+        self._doc_actions.append(
+            self._act(m, "Сброс масштаба", self._zoom_reset, shortcuts="Ctrl+0"))
 
-    def _act(self, menu, text, slot):
-        a = QAction(text, self); a.triggered.connect(slot)
-        menu.addAction(a); return a
+    def _act(self, menu, text, slot, shortcuts=None):
+        """Создать QAction и добавить в меню.
+
+        shortcuts — строка или список строк в формате QKeySequence
+        ("Ctrl+S", "Ctrl+Shift+S", …). Все действия принадлежат окну,
+        поэтому их шорткаты работают при активном окне независимо от
+        того, какой виджет сейчас в фокусе — это важно для undo/redo,
+        когда пользователь правит значения в панели свойств.
+
+        ВАЖНО: не назначайте тот же аккорд на второй QAction (например,
+        на кнопку тулбара). Qt увидит два действия с одинаковым шорткатом
+        в контексте WindowShortcut и напечатает «Ambiguous shortcut
+        overload», не вызвав ни одного из них.
+        """
+        a = QAction(text, self)
+        a.triggered.connect(slot)
+        if shortcuts:
+            if isinstance(shortcuts, str):
+                shortcuts = [shortcuts]
+            a.setShortcuts([QKeySequence(s) for s in shortcuts])
+        menu.addAction(a)
+        return a
 
     # ------------------------------------------------------------------
     # Верхний тулбар
@@ -400,8 +446,18 @@ class MainWindow(QMainWindow):
         tb.setIconSize(QSize(18, 18))
         self.top_toolbar = tb
 
+        # ВАЖНО про шорткаты.
+        # Все горячие клавиши (Ctrl+S/Z/Y/Shift+S/Shift+Z/Shift+N/N/O/D/=/-/0)
+        # назначены РОВНО ОДИН РАЗ — на QAction пунктов меню в _build_menu().
+        # Кнопки тулбара — это отдельные QAction на те же слоты, но БЕЗ
+        # собственного setShortcut(): если назначить шорткат и там, и в
+        # меню, Qt получит два действия с одинаковым аккордом в контексте
+        # WindowShortcut и напечатает «Ambiguous shortcut overload», не
+        # вызвав ни одного из них. Тултипы ниже просто напоминают
+        # пользователю, какие клавиши реально работают.
+
         self.act_save_tb = QAction(_icon("save"), "Сохранить", self)
-        self.act_save_tb.setToolTip("Сохранить библиотеку")
+        self.act_save_tb.setToolTip("Сохранить библиотеку (Ctrl+S)")
         self.act_save_tb.triggered.connect(self.save_file)
         tb.addAction(self.act_save_tb)
 
@@ -413,9 +469,15 @@ class MainWindow(QMainWindow):
         tb.addAction(self.act_undo_tb)
 
         self.act_redo_tb = QAction(_icon("redo"), "Повторить", self)
-        self.act_redo_tb.setToolTip("Повторить отменённое действие (Ctrl+Y)")
+        self.act_redo_tb.setToolTip(
+            "Повторить отменённое действие (Ctrl+Y, Ctrl+Shift+Z)")
         self.act_redo_tb.triggered.connect(self.redo)
         tb.addAction(self.act_redo_tb)
+
+        self.act_duplicate = QAction("Дублировать", self)
+        self.act_duplicate.setToolTip("Дублировать выделение (Ctrl+D)")
+        self.act_duplicate.triggered.connect(self.duplicate_selected)
+        tb.addAction(self.act_duplicate)
 
         tb.addSeparator()
 
@@ -434,6 +496,7 @@ class MainWindow(QMainWindow):
 
         self._doc_actions.extend([
             self.act_save_tb, self.act_undo_tb, self.act_redo_tb,
+            self.act_duplicate,
             self.act_add_modules_tb, self.act_resetzoom_tb,
         ])
 
@@ -764,6 +827,12 @@ class MainWindow(QMainWindow):
     def redo(self):
         s = self._current_stack()
         if s is not None: s.redo()
+
+    def duplicate_selected(self):
+        """Ctrl+D: продублировать выделенное на активной вкладке."""
+        c = self._current_canvas()
+        if c is not None:
+            c.duplicate_selected()
 
     # ------------------------------------------------------------------
     # Вид

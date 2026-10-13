@@ -143,3 +143,25 @@ class SetOriginCommand(Command):
 
     def do(self):   self._shift(-1.0)
     def undo(self): self._shift(+1.0)
+    
+class MacroCommand(Command):
+    """Группа команд, выполняемая как одна (одна ступень undo/redo).
+
+    Удобно для операций, которые семантически атомарны для пользователя,
+    но состоят из нескольких изменений модели (например, дублирование
+    выделенной группы объектов).
+    """
+
+    def __init__(self, label: str, commands):
+        self.label = label
+        self.commands = list(commands)
+
+    def do(self):
+        for c in self.commands:
+            c.do()
+
+    def undo(self):
+        # Откат в обратном порядке — так зависимости между подкомандами
+        # соблюдаются, даже если они появятся в будущем.
+        for c in reversed(self.commands):
+            c.undo()
