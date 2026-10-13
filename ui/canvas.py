@@ -81,7 +81,10 @@ def _layer_pen(layer: str, width_mm: float) -> QPen:
     pen = QPen(_layer_qcolor(layer))
     pen.setCosmetic(False)
     pen.setWidthF(max(width_mm, 0.02))
-    pen.setCapStyle(Qt.FlatCap)
+    # KiCad рисует концы линий закруглёнными, а не обрезанными «по
+    # линейке». FlatCap даёт острые срезы; RoundCap — полукруг на
+    # каждом конце, как видит пользователь в самом KiCad.
+    pen.setCapStyle(Qt.RoundCap)
     return pen
 
 
@@ -980,6 +983,9 @@ class FootprintView(QGraphicsView):
     def _style_preview(self, it):
         pen = QPen(PREVIEW_COLOR); pen.setCosmetic(True)
         pen.setWidthF(1.5); pen.setStyle(Qt.DashLine)
+        # Тот же RoundCap, что и у настоящих линий, — превью не должно
+        # выглядеть резче, чем результат клика.
+        pen.setCapStyle(Qt.RoundCap)
         it.setPen(pen); it.setZValue(1000)
 
     def _clear_preview_item(self):
