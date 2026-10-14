@@ -353,7 +353,10 @@ class MainWindow(QMainWindow):
         self._update_title()
 
     def _update_title(self):
-        self.setWindowTitle("KiForge")
+        if self.library is not None and self.library.file_name:
+            self.setWindowTitle(f"KiForge — {self.library.file_name}")
+        else:
+            self.setWindowTitle("KiForge")
 
     # ------------------------------------------------------------------
     # Меню
