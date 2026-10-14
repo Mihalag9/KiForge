@@ -132,11 +132,21 @@ class Footprint:
 
 
 def new_footprint(name: str = "New_Module") -> Footprint:
-    """Создать модуль с дефолтными T0/T1, как делает KiCad."""
+    """Создать модуль с дефолтными T0/T1, как делает KiCad.
+
+    Reference-текст по умолчанию — "REF**", а не имя модуля. Это конвенция
+    legacy-формата: KiCad считает поле reference по тегу T0, а не по
+    содержимому, и при постановке модуля на плату сам подставит реальное
+    обозначение (R1, U5, …). Строка "REF**" в файле нужна как маркер для
+    инструментов проверки библиотек (kicad-library-utils и т. п.).
+
+    Имя модуля лежит в fp.name и в Li-строке — это отдельная сущность,
+    которая не обязана совпадать с текстом reference.
+    """
     import time
     fp = Footprint(name=name)
     fp.po_tstamp = format(int(time.time()) & 0xFFFFFFFF, "08X")
-    fp.texts.append(FpText(kind="reference", text=name,
+    fp.texts.append(FpText(kind="reference", text="REF**",
                            x=0.0, y=0.0, layer="F.SilkS"))
     fp.texts.append(FpText(kind="value", text="VAL**",
                            x=0.0, y=0.0, layer="F.SilkS"))
