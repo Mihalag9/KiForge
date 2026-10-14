@@ -1,10 +1,9 @@
 """Undo/Redo через паттерн Command."""
 from __future__ import annotations
-from .footprint import Footprint, Pad, FpLine, FpCircle, FpArc, FpText
+from .footprint import Footprint
 
 
 class Command:
-    label = "команда"
     def do(self): raise NotImplementedError
     def undo(self): raise NotImplementedError
 
@@ -49,7 +48,6 @@ class CommandStack:
 
 
 class EditObjectCommand(Command):
-    label = "Изменить объект"
     def __init__(self, obj, **changes):
         self.obj = obj
         self.changes = changes
@@ -60,13 +58,6 @@ class EditObjectCommand(Command):
     def undo(self):
         for k, v in self.old.items():
             setattr(self.obj, k, v)
-
-
-class EditPadCommand(EditObjectCommand):    label = "Изменить пад"
-class EditLineCommand(EditObjectCommand):   label = "Изменить линию"
-class EditCircleCommand(EditObjectCommand): label = "Изменить окружность"
-class EditArcCommand(EditObjectCommand):    label = "Изменить дугу"
-class EditTextCommand(EditObjectCommand):   label = "Изменить текст"
 
 
 class _ListAdd(Command):
@@ -94,20 +85,19 @@ class _ListRemove(Command):
             getattr(self.fp, self.attr).insert(self.index, self.obj)
 
 
-class AddPadCommand(_ListAdd):     label = "Добавить пад";      attr = "pads"
-class RemovePadCommand(_ListRemove): label = "Удалить пад";     attr = "pads"
-class AddLineCommand(_ListAdd):    label = "Добавить линию";    attr = "lines"
-class RemoveLineCommand(_ListRemove): label = "Удалить линию";  attr = "lines"
-class AddCircleCommand(_ListAdd):  label = "Добавить окружность"; attr = "circles"
-class RemoveCircleCommand(_ListRemove): label = "Удалить окружность"; attr = "circles"
-class AddArcCommand(_ListAdd):     label = "Добавить дугу";     attr = "arcs"
-class RemoveArcCommand(_ListRemove): label = "Удалить дугу";    attr = "arcs"
-class AddTextCommand(_ListAdd):    label = "Добавить текст";    attr = "texts"
-class RemoveTextCommand(_ListRemove): label = "Удалить текст";  attr = "texts"
+class AddPadCommand(_ListAdd):        attr = "pads"
+class RemovePadCommand(_ListRemove):  attr = "pads"
+class AddLineCommand(_ListAdd):       attr = "lines"
+class RemoveLineCommand(_ListRemove): attr = "lines"
+class AddCircleCommand(_ListAdd):     attr = "circles"
+class RemoveCircleCommand(_ListRemove): attr = "circles"
+class AddArcCommand(_ListAdd):        attr = "arcs"
+class RemoveArcCommand(_ListRemove):  attr = "arcs"
+class AddTextCommand(_ListAdd):       attr = "texts"
+class RemoveTextCommand(_ListRemove): attr = "texts"
 
 
 class MoveManyCommand(Command):
-    label = "Переместить группу"
     def __init__(self, moves):
         self._moves = list(moves)
         self._old = [{k: getattr(o, k) for k in ch} for o, ch in self._moves]
@@ -122,7 +112,6 @@ class MoveManyCommand(Command):
 
 
 class SetOriginCommand(Command):
-    label = "Точка привязки"
     def __init__(self, fp: Footprint, dx: float, dy: float):
         self.fp = fp; self.dx = dx; self.dy = dy
 
@@ -152,8 +141,7 @@ class MacroCommand(Command):
     выделенной группы объектов).
     """
 
-    def __init__(self, label: str, commands):
-        self.label = label
+    def __init__(self, commands):
         self.commands = list(commands)
 
     def do(self):

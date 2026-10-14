@@ -644,7 +644,7 @@ class FootprintView(QGraphicsView):
                 sub.append(AddTextCommand(self.footprint, clone))
 
         if sub:
-            self._push_command(MacroCommand("Дублировать", sub))
+            self._push_command(MacroCommand(sub))
             # После push cmd_stack.do() модель изменилась, а on_change
             # синхронно вызвал rebuild() — сцена уже пересобрана. Значит
             # можно искать новые items среди уже существующих.

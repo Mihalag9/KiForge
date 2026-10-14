@@ -4,9 +4,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QFormLayout, QLabel, QLineEdit, QVBoxLayout,
                                QWidget)
 
-from core.commands import (EditArcCommand, EditCircleCommand,
-                           EditLineCommand, EditPadCommand, EditTextCommand,
-                           RemoveTextCommand)
+from core.commands import EditObjectCommand, RemoveTextCommand
 from core.footprint import Footprint
 from ui.layers_panel import KICAD_LAYERS
 
@@ -289,7 +287,7 @@ class PropertiesPanel(QWidget):
         else:
             offx = self.p_offx.value()
             offy = self.p_offy.value()
-        self._push(EditPadCommand(
+        self._push(EditObjectCommand(
             self.item,
             number=self.p_number.text(),
             shape=self.p_shape.currentText(),
@@ -303,7 +301,7 @@ class PropertiesPanel(QWidget):
 
     def _apply_line(self, *_):
         if self._loading or self.item is None: return
-        self._push(EditLineCommand(
+        self._push(EditObjectCommand(
             self.item,
             x1=self.l_x1.value(), y1=self.l_y1.value(),
             x2=self.l_x2.value(), y2=self.l_y2.value(),
@@ -313,7 +311,7 @@ class PropertiesPanel(QWidget):
     def _apply_circle(self, *_):
         if self._loading or self.item is None: return
         r = self.c_r.value()
-        self._push(EditCircleCommand(
+        self._push(EditObjectCommand(
             self.item,
             cx=self.c_cx.value(), cy=self.c_cy.value(),
             ex=self.c_cx.value() + r, ey=self.c_cy.value(),
@@ -322,7 +320,7 @@ class PropertiesPanel(QWidget):
 
     def _apply_arc(self, *_):
         if self._loading or self.item is None: return
-        self._push(EditArcCommand(
+        self._push(EditObjectCommand(
             self.item,
             cx=self.a_cx.value(), cy=self.a_cy.value(),
             sx=self.a_sx.value(), sy=self.a_sy.value(),
@@ -358,7 +356,7 @@ class PropertiesPanel(QWidget):
             return
 
         # 3) Обычное обновление.
-        self._push(EditTextCommand(
+        self._push(EditObjectCommand(
             self.item,
             text=new_text,
             x=self.t_x.value(), y=self.t_y.value(),
