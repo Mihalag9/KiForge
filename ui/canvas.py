@@ -14,12 +14,8 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QGraphicsEllipseItem,
                                QStyleOptionGraphicsItem, QVBoxLayout)
 
 from core.arc_math import arc_points_from_center
-from core.commands import (AddArcCommand, AddCircleCommand, AddLineCommand,
-                           AddPadCommand, AddTextCommand, MacroCommand,
-                           MoveManyCommand, RemoveArcCommand,
-                           RemoveCircleCommand, RemoveLineCommand,
-                           RemovePadCommand, RemoveTextCommand,
-                           SetOriginCommand)
+from core.commands import (ListAdd, ListRemove, MacroCommand,
+                           MoveManyCommand, SetOriginCommand)
 from core.footprint import (Footprint, FpArc, FpCircle, FpLine, FpText, Pad,
                             next_pad_number)
 
@@ -559,18 +555,18 @@ class FootprintView(QGraphicsView):
         skipped_protected = 0
         for it in list(self._scene.selectedItems()):
             if isinstance(it, PadItem):
-                self.cmd_stack.push(RemovePadCommand(self.footprint, it.pad))
+                self.cmd_stack.push(ListRemove(self.footprint.pads, it.pad))
             elif isinstance(it, LineItem):
-                self.cmd_stack.push(RemoveLineCommand(self.footprint, it.line))
+                self.cmd_stack.push(ListRemove(self.footprint.lines, it.line))
             elif isinstance(it, CircleItem):
-                self.cmd_stack.push(RemoveCircleCommand(self.footprint, it.circle))
+                self.cmd_stack.push(ListRemove(self.footprint.circles, it.circle))
             elif isinstance(it, ArcItem):
-                self.cmd_stack.push(RemoveArcCommand(self.footprint, it.arc))
+                self.cmd_stack.push(ListRemove(self.footprint.arcs, it.arc))
             elif isinstance(it, TextItem):
                 if _is_protected_text(it.text_obj):
                     skipped_protected += 1
                     continue
-                self.cmd_stack.push(RemoveTextCommand(self.footprint, it.text_obj))
+                self.cmd_stack.push(ListRemove(self.footprint.texts, it.text_obj))
 
         if skipped_protected:
             self._notify_protected(skipped_protected, verb="удалить")
@@ -618,22 +614,22 @@ class FootprintView(QGraphicsView):
                 clone.y += dy
                 max_n += 1
                 clone.number = str(max_n)
-                sub.append(AddPadCommand(self.footprint, clone))
+                sub.append(ListAdd(self.footprint.pads, clone))
             elif isinstance(it, LineItem):
                 clone = copy.deepcopy(it.line)
                 clone.x1 += dx; clone.y1 += dy
                 clone.x2 += dx; clone.y2 += dy
-                sub.append(AddLineCommand(self.footprint, clone))
+                sub.append(ListAdd(self.footprint.lines, clone))
             elif isinstance(it, CircleItem):
                 clone = copy.deepcopy(it.circle)
                 clone.cx += dx; clone.cy += dy
                 clone.ex += dx; clone.ey += dy
-                sub.append(AddCircleCommand(self.footprint, clone))
+                sub.append(ListAdd(self.footprint.circles, clone))
             elif isinstance(it, ArcItem):
                 clone = copy.deepcopy(it.arc)
                 clone.cx += dx; clone.cy += dy
                 clone.sx += dx; clone.sy += dy
-                sub.append(AddArcCommand(self.footprint, clone))
+                sub.append(ListAdd(self.footprint.arcs, clone))
             elif isinstance(it, TextItem):
                 if _is_protected_text(it.text_obj):
                     skipped_protected += 1
@@ -641,7 +637,7 @@ class FootprintView(QGraphicsView):
                 clone = copy.deepcopy(it.text_obj)
                 clone.x += dx
                 clone.y += dy
-                sub.append(AddTextCommand(self.footprint, clone))
+                sub.append(ListAdd(self.footprint.texts, clone))
 
         if sub:
             self._push_command(MacroCommand(sub))
@@ -1003,7 +999,7 @@ class FootprintView(QGraphicsView):
                   x=pos.x(), y=pos.y(),
                   width=1.524, height=1.524,
                   drill=0.8128, attachment="STD")
-        self._push_command(AddPadCommand(self.footprint, pad))
+        self._push_command(ListAdd(self.footprint.pads, pad))
 
     def _tool_two_point(self, pos, kind):
         if not self._pending_points:
@@ -1013,11 +1009,11 @@ class FootprintView(QGraphicsView):
         if kind == "line":
             ln = FpLine(x1=p1.x(), y1=p1.y(), x2=pos.x(), y2=pos.y(),
                         layer=self.default_graphics_layer)
-            self._push_command(AddLineCommand(self.footprint, ln))
+            self._push_command(ListAdd(self.footprint.lines, ln))
         elif kind == "circle":
             c = FpCircle(cx=p1.x(), cy=p1.y(), ex=pos.x(), ey=pos.y(),
                          layer=self.default_graphics_layer)
-            self._push_command(AddCircleCommand(self.footprint, c))
+            self._push_command(ListAdd(self.footprint.circles, c))
 
     def _tool_arc(self, pos):
         self._pending_points.append(pos)
@@ -1030,7 +1026,7 @@ class FootprintView(QGraphicsView):
             arc = FpArc(cx=cx, cy=cy, sx=p1.x(), sy=p1.y(),
                         angle=ang, layer=self.default_graphics_layer)
             self._cancel_pending()
-            self._push_command(AddArcCommand(self.footprint, arc))
+            self._push_command(ListAdd(self.footprint.arcs, arc))
 
     def _tool_add_text(self, pos):
         dlg = _NewTextDialog(self)
@@ -1046,7 +1042,7 @@ class FootprintView(QGraphicsView):
             y=pos.y(),
             layer=self.default_graphics_layer,
         )
-        self._push_command(AddTextCommand(self.footprint, item))
+        self._push_command(ListAdd(self.footprint.texts, item))
 
     def _tool_set_anchor(self, pos):
         self._push_command(SetOriginCommand(self.footprint, pos.x(), pos.y()))
@@ -1058,18 +1054,18 @@ class FootprintView(QGraphicsView):
         """
         for it in self._scene.items(pos):
             if isinstance(it, PadItem):
-                self._push_command(RemovePadCommand(self.footprint, it.pad)); return
+                self._push_command(ListRemove(self.footprint.pads, it.pad)); return
             if isinstance(it, LineItem):
-                self._push_command(RemoveLineCommand(self.footprint, it.line)); return
+                self._push_command(ListRemove(self.footprint.lines, it.line)); return
             if isinstance(it, CircleItem):
-                self._push_command(RemoveCircleCommand(self.footprint, it.circle)); return
+                self._push_command(ListRemove(self.footprint.circles, it.circle)); return
             if isinstance(it, ArcItem):
-                self._push_command(RemoveArcCommand(self.footprint, it.arc)); return
+                self._push_command(ListRemove(self.footprint.arcs, it.arc)); return
             if isinstance(it, TextItem):
                 if _is_protected_text(it.text_obj):
                     self._notify_protected(1)
                     return
-                self._push_command(RemoveTextCommand(self.footprint, it.text_obj)); return
+                self._push_command(ListRemove(self.footprint.texts, it.text_obj)); return
 
     # --- предпросмотр ---
     def _style_preview(self, it):

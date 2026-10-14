@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox,
                                QFormLayout, QLabel, QLineEdit, QVBoxLayout,
                                QWidget)
 
-from core.commands import EditObjectCommand, RemoveTextCommand
+from core.commands import EditObjectCommand, ListRemove
 from core.footprint import Footprint
 from ui.layers_panel import KICAD_LAYERS
 
@@ -352,7 +352,7 @@ class PropertiesPanel(QWidget):
         #    пустой TextItem, который невозможно ни выделить, ни удалить.
         if kind == "user" and not new_text.strip() \
                 and self.footprint is not None:
-            self._push(RemoveTextCommand(self.footprint, self.item))
+            self._push(ListRemove(self.footprint.texts, self.item))
             return
 
         # 3) Обычное обновление.

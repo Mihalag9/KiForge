@@ -60,41 +60,25 @@ class EditObjectCommand(Command):
             setattr(self.obj, k, v)
 
 
-class _ListAdd(Command):
-    attr = ""
-    def __init__(self, fp: Footprint, obj):
-        self.fp = fp; self.obj = obj
+class ListAdd(Command):
+    def __init__(self, lst: list, obj):
+        self.lst = lst; self.obj = obj
     def do(self):
-        getattr(self.fp, self.attr).append(self.obj)
+        self.lst.append(self.obj)
     def undo(self):
-        lst = getattr(self.fp, self.attr)
-        if self.obj in lst: lst.remove(self.obj)
+        if self.obj in self.lst: self.lst.remove(self.obj)
 
 
-class _ListRemove(Command):
-    attr = ""
-    def __init__(self, fp: Footprint, obj):
-        self.fp = fp; self.obj = obj; self.index = None
+class ListRemove(Command):
+    def __init__(self, lst: list, obj):
+        self.lst = lst; self.obj = obj; self.index = None
     def do(self):
-        lst = getattr(self.fp, self.attr)
-        if self.obj in lst:
-            self.index = lst.index(self.obj)
-            lst.remove(self.obj)
+        if self.obj in self.lst:
+            self.index = self.lst.index(self.obj)
+            self.lst.remove(self.obj)
     def undo(self):
         if self.index is not None:
-            getattr(self.fp, self.attr).insert(self.index, self.obj)
-
-
-class AddPadCommand(_ListAdd):        attr = "pads"
-class RemovePadCommand(_ListRemove):  attr = "pads"
-class AddLineCommand(_ListAdd):       attr = "lines"
-class RemoveLineCommand(_ListRemove): attr = "lines"
-class AddCircleCommand(_ListAdd):     attr = "circles"
-class RemoveCircleCommand(_ListRemove): attr = "circles"
-class AddArcCommand(_ListAdd):        attr = "arcs"
-class RemoveArcCommand(_ListRemove):  attr = "arcs"
-class AddTextCommand(_ListAdd):       attr = "texts"
-class RemoveTextCommand(_ListRemove): attr = "texts"
+            self.lst.insert(self.index, self.obj)
 
 
 class MoveManyCommand(Command):
