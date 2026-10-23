@@ -38,22 +38,24 @@ DEFAULT_VISIBLE = {
 class LayersPanel(QWidget):
     visibility_changed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, layers=None, default_visible=None):
         super().__init__(parent)
+        layers = KICAD_LAYERS if layers is None else layers
+        default_visible = DEFAULT_VISIBLE if default_visible is None else default_visible
         self._boxes: dict[str, QCheckBox] = {}
         root = QVBoxLayout(self); root.setContentsMargins(4, 4, 4, 4)
         inner = QWidget()
         layout = QVBoxLayout(inner)
         layout.setContentsMargins(0, 0, 0, 0); layout.setSpacing(2)
 
-        for name, color in KICAD_LAYERS:
+        for name, color in layers:
             row = QWidget(); h = QHBoxLayout(row)
             h.setContentsMargins(0, 0, 0, 0); h.setSpacing(6)
             sw = QLabel(); sw.setFixedSize(12, 12)
             sw.setStyleSheet(f"background:{color}; border:1px solid #444; border-radius:2px;")
             h.addWidget(sw)
             cb = QCheckBox(name)
-            cb.setChecked(name in DEFAULT_VISIBLE)
+            cb.setChecked(name in default_visible)
             cb.stateChanged.connect(self._on_change)
             h.addWidget(cb); h.addStretch(1)
             layout.addWidget(row)

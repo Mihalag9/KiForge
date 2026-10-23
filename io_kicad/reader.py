@@ -52,7 +52,7 @@ def read(text: str) -> Library:
 # Модуль
 # --------------------------------------------------------------------------
 
-def _read_module(lines, i):
+def _read_module(lines, i, to_mm=units_to_mm):
     parts = lines[i].strip().split(None, 1)
     name = parts[1].strip() if len(parts) > 1 else "Module"
     fp = Footprint(name=name)
@@ -66,15 +66,15 @@ def _read_module(lines, i):
         if s.startswith("$EndMODULE"):
             return fp, i + 1
         if s.startswith("$PAD"):
-            pad, i = _read_pad(lines, i + 1)
+            pad, i = _read_pad(lines, i + 1, to_mm)
             fp.pads.append(pad)
             continue
-        _read_module_line(fp, s)
+        _read_module_line(fp, s, to_mm)
         i += 1
     return fp, i
 
 
-def _read_module_line(fp: Footprint, s: str) -> None:
+def _read_module_line(fp: Footprint, s: str, to_mm=units_to_mm) -> None:
     parts = s.split()
     tag = parts[0]
     rest = parts[1:]
@@ -103,13 +103,13 @@ def _read_module_line(fp: Footprint, s: str) -> None:
         fp.op = " ".join(rest)
     elif tag in ("T0", "T1", "T2"):
         # T0 = reference, T1 = value, T2 = user-текст
-        _read_text(fp, tag, rest)
+        _read_text(fp, tag, rest, to_mm)
     elif tag == "DS":
-        _read_ds(fp, rest)
+        _read_ds(fp, rest, to_mm)
     elif tag == "DC":
-        _read_dc(fp, rest)
+        _read_dc(fp, rest, to_mm)
     elif tag == "DA":
-        _read_da(fp, rest)
+        _read_da(fp, rest, to_mm)
     else:
         fp.extra.append(s)
 
@@ -132,7 +132,7 @@ def _parse_quoted(s: str):
     return parts[0], parts[1] if len(parts) > 1 else ""
 
 
-def _read_text(fp, tag, rest):
+def _read_text(fp, tag, rest, to_mm=units_to_mm):
     """Разобрать строку T0/T1/T2.
 
     Формат (legacy KiCad):
@@ -144,12 +144,12 @@ def _read_text(fp, tag, rest):
         fp.extra.append(f"{tag} " + " ".join(rest)); return
     t = FpText()
     t.kind = {"T0": "reference", "T1": "value", "T2": "user"}.get(tag, "value")
-    t.x = units_to_mm(parse_int(rest[0]))
-    t.y = units_to_mm(parse_int(rest[1]))
-    t.height = units_to_mm(parse_int(rest[2]))   # H — первым
-    t.width = units_to_mm(parse_int(rest[3]))    # W — вторым
+    t.x = to_mm(parse_int(rest[0]))
+    t.y = to_mm(parse_int(rest[1]))
+    t.height = to_mm(parse_int(rest[2]))   # H — первым
+    t.width = to_mm(parse_int(rest[3]))    # W — вторым
     t.rotation = parse_int(rest[4]) / 10.0       # 0.1° → градусы
-    t.thickness = units_to_mm(parse_int(rest[5]))
+    t.thickness = to_mm(parse_int(rest[5]))
     t.mirror = rest[6].upper() == "M"
     t.visible = rest[7].upper() != "I"
     t.layer = parse_layer(rest[8])
@@ -160,33 +160,33 @@ def _read_text(fp, tag, rest):
     fp.texts.append(t)
 
 
-def _read_ds(fp, rest):
+def _read_ds(fp, rest, to_mm=units_to_mm):
     if len(rest) < 6:
         fp.extra.append("DS " + " ".join(rest)); return
     ln = FpLine()
-    ln.x1 = units_to_mm(parse_int(rest[0]))
-    ln.y1 = units_to_mm(parse_int(rest[1]))
-    ln.x2 = units_to_mm(parse_int(rest[2]))
-    ln.y2 = units_to_mm(parse_int(rest[3]))
-    ln.width = units_to_mm(parse_int(rest[4]))
+    ln.x1 = to_mm(parse_int(rest[0]))
+    ln.y1 = to_mm(parse_int(rest[1]))
+    ln.x2 = to_mm(parse_int(rest[2]))
+    ln.y2 = to_mm(parse_int(rest[3]))
+    ln.width = to_mm(parse_int(rest[4]))
     ln.layer = parse_layer(rest[5])
     fp.lines.append(ln)
 
 
-def _read_dc(fp, rest):
+def _read_dc(fp, rest, to_mm=units_to_mm):
     if len(rest) < 6:
         fp.extra.append("DC " + " ".join(rest)); return
     c = FpCircle()
-    c.cx = units_to_mm(parse_int(rest[0]))
-    c.cy = units_to_mm(parse_int(rest[1]))
-    c.ex = units_to_mm(parse_int(rest[2]))
-    c.ey = units_to_mm(parse_int(rest[3]))
-    c.width = units_to_mm(parse_int(rest[4]))
+    c.cx = to_mm(parse_int(rest[0]))
+    c.cy = to_mm(parse_int(rest[1]))
+    c.ex = to_mm(parse_int(rest[2]))
+    c.ey = to_mm(parse_int(rest[3]))
+    c.width = to_mm(parse_int(rest[4]))
     c.layer = parse_layer(rest[5])
     fp.circles.append(c)
 
 
-def _read_da(fp, rest):
+def _read_da(fp, rest, to_mm=units_to_mm):
     """Дуга. Формат: DA X Y Xp Yp Angle Pen Layer.
 
     X,Y — центр базовой окружности; Xp,Yp — начальная точка дуги
@@ -196,12 +196,12 @@ def _read_da(fp, rest):
     if len(rest) < 7:
         fp.extra.append("DA " + " ".join(rest)); return
     a = FpArc()
-    a.cx = units_to_mm(parse_int(rest[0]))
-    a.cy = units_to_mm(parse_int(rest[1]))
-    a.sx = units_to_mm(parse_int(rest[2]))
-    a.sy = units_to_mm(parse_int(rest[3]))
+    a.cx = to_mm(parse_int(rest[0]))
+    a.cy = to_mm(parse_int(rest[1]))
+    a.sx = to_mm(parse_int(rest[2]))
+    a.sy = to_mm(parse_int(rest[3]))
     a.angle = parse_int(rest[4]) / 10.0          # 0.1° → градусы
-    a.width = units_to_mm(parse_int(rest[5]))
+    a.width = to_mm(parse_int(rest[5]))
     a.layer = parse_layer(rest[6])
     fp.arcs.append(a)
 
@@ -210,7 +210,7 @@ def _read_da(fp, rest):
 # Пад
 # --------------------------------------------------------------------------
 
-def _read_pad(lines, i):
+def _read_pad(lines, i, to_mm=units_to_mm):
     pad = Pad()
     n = len(lines)
     while i < n:
@@ -222,34 +222,34 @@ def _read_pad(lines, i):
         parts = s.split(None, 1)
         tag = parts[0]
         rest = parts[1] if len(parts) > 1 else ""
-        if tag == "Sh":   _read_pad_sh(pad, rest)
-        elif tag == "Dr": _read_pad_dr(pad, rest)
+        if tag == "Sh":   _read_pad_sh(pad, rest, to_mm)
+        elif tag == "Dr": _read_pad_dr(pad, rest, to_mm)
         elif tag == "At": _read_pad_at(pad, rest)
         elif tag == "Ne": _read_pad_ne(pad, rest)
         elif tag == "Po":
             r = rest.split()
-            if len(r) >= 1: pad.x = units_to_mm(parse_int(r[0]))
-            if len(r) >= 2: pad.y = units_to_mm(parse_int(r[1]))
+            if len(r) >= 1: pad.x = to_mm(parse_int(r[0]))
+            if len(r) >= 2: pad.y = to_mm(parse_int(r[1]))
         else:
             pad.extra.append(s)
         i += 1
     return pad, i
 
 
-def _read_pad_sh(pad, rest):
+def _read_pad_sh(pad, rest, to_mm=units_to_mm):
     name, r = _parse_quoted(rest)
     pad.number = name
     parts = r.split()
     if len(parts) >= 1: pad.shape = parts[0].upper()
-    if len(parts) >= 2: pad.width = units_to_mm(parse_int(parts[1]))
-    if len(parts) >= 3: pad.height = units_to_mm(parse_int(parts[2]))
+    if len(parts) >= 2: pad.width = to_mm(parse_int(parts[1]))
+    if len(parts) >= 3: pad.height = to_mm(parse_int(parts[2]))
     # В файле порядок Ydelta Xdelta (см. PDF), не Xdelta Ydelta.
     if len(parts) >= 4: pad.pad_dx = parse_int(parts[3])   # Ydelta
     if len(parts) >= 5: pad.pad_dy = parse_int(parts[4])   # Xdelta
     if len(parts) >= 6: pad.pad_angle = parse_int(parts[5])
 
 
-def _read_pad_dr(pad, rest):
+def _read_pad_dr(pad, rest, to_mm=units_to_mm):
     """Разобрать строку 'Dr' пада.
 
     Формат legacy KiCad (единицы 0.1 мил):
@@ -285,9 +285,9 @@ def _read_pad_dr(pad, rest):
         cands = [v for v in (w, h) if v > 0]
         size = min(cands) if cands else 0
 
-    pad.drill = units_to_mm(size) if size > 0 else None
-    pad.drill_offset_x = units_to_mm(-off_x)
-    pad.drill_offset_y = units_to_mm(-off_y)
+    pad.drill = to_mm(size) if size > 0 else None
+    pad.drill_offset_x = to_mm(-off_x)
+    pad.drill_offset_y = to_mm(-off_y)
 
 
 def _read_pad_at(pad, rest):

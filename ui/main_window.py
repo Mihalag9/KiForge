@@ -13,6 +13,7 @@ from core.commands import CommandStack
 from core.footprint import Footprint, new_footprint
 from core.library import Library
 from io_kicad import reader, writer
+from ui.board_window import BoardWindow
 from ui.canvas import FootprintView
 from ui.layers_panel import LayersPanel
 from ui.module_picker import ModulePickerDialog
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
 
         self.library: Library | None = None
         self.current_path: Path | None = None
+        self.board_windows: list[BoardWindow] = []
         self.user_grid_mm = DEFAULT_USER_GRID_MM
         self.current_grid_mm = DEFAULT_GRID_MM
 
@@ -281,6 +283,15 @@ class MainWindow(QMainWindow):
         btn_open.clicked.connect(self.open_file)
         cv.addWidget(btn_open)
 
+        cv.addSpacing(10)
+
+        btn_board = QPushButton("Открыть плату .brd…")
+        btn_board.setObjectName("welcomeBtnSecondary")
+        btn_board.setFixedHeight(46)
+        btn_board.setCursor(Qt.PointingHandCursor)
+        btn_board.clicked.connect(self.open_board_file)
+        cv.addWidget(btn_board)
+
         outer.addWidget(card)
         return w
 
@@ -371,6 +382,8 @@ class MainWindow(QMainWindow):
         # поэтому не добавляем их в _doc_actions (которые гасятся без документа).
         self._act(m, "Новая библиотека…", self.new_library, shortcuts="Ctrl+N")
         self._act(m, "Открыть…", self.open_file, shortcuts="Ctrl+O")
+        # Плата — отдельный документ, не зависит от загруженной библиотеки.
+        self._act(m, "Открыть плату .brd…", self.open_board_file)
         m.addSeparator()
         self._doc_actions.append(
             self._act(m, "Сохранить", self.save_file, shortcuts="Ctrl+S"))
@@ -597,6 +610,25 @@ class MainWindow(QMainWindow):
         for a in self._tool_group.actions():
             if a.data() == tid:
                 a.setChecked(True); return
+
+    def open_board_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть плату", "",
+            "Платы KiCad (*.brd);;Все файлы (*)")
+        if not path:
+            return
+        win = BoardWindow(self)
+        if win.load_file(Path(path)):
+            # Не даём окну погибнуть сборщиком мусора.
+            self.board_windows.append(win)
+            win.destroyed.connect(
+                lambda _obj=None, w=win: self._remove_board_window(w))
+            win.show()
+            win.raise_()
+
+    def _remove_board_window(self, win: BoardWindow):
+        if win in self.board_windows:
+            self.board_windows.remove(win)
 
     # ------------------------------------------------------------------
     # Файл
