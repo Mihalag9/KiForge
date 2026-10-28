@@ -13,7 +13,7 @@ from core.board import (Board, BoardDrawing, BoardText, BoardTrack,
                         module_pad_position, module_transform, ratsnest_segments)
 from core.footprint import Footprint, Pad
 from ui.canvas import (BG_COLOR, GRID_COLOR, GRID_PEN_WIDTH,
-                       PAD_COLOR, _pad_path, _layer_pen)
+                       PAD_COLOR, _pad_path, _layer_pen, PAD_NUM_COLOR)
 
 
 RATSNEST_COLOR = QColor(120, 150, 255, 160)
@@ -256,7 +256,6 @@ class BoardScene(QGraphicsScene):
                     painter.drawLine(QPointF(*p1), QPointF(*p2))
                     
         for t in fp.texts:
-            # Отрисовываем все, но передаем флаг скрытости для цвета
             if t.layer in self.visible_layers:
                 is_hidden = not getattr(t, "visible", True)
                 self._draw_text(painter, t.text, t.x, t.y, t.width, t.height,
@@ -272,21 +271,70 @@ class BoardScene(QGraphicsScene):
         painter.translate(pad.x, pad.y)
         if pad.pad_angle:
             painter.rotate(-pad.pad_angle / 10.0)
-        path = _pad_path(pad.shape, max(pad.width, 0.01),
-                         max(pad.height, 0.01))
+            
+        w = max(pad.width, 0.01)
+        h = max(pad.height, 0.01)
+        path = _pad_path(pad.shape, w, h)
+        
         fill = QColor(PAD_COLOR)
         fill.setAlpha(220)
         pen = QPen(PAD_COLOR.darker(140))
-        pen.setWidthF(max(min(pad.width, pad.height) * 0.05, 0.02))
+        pen.setWidthF(max(min(w, h) * 0.05, 0.02))
         painter.setPen(pen)
         painter.setBrush(QBrush(fill))
         painter.drawPath(path)
+        
         if pad.has_drill:
             r = pad.drill / 2.0
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(BG_COLOR))
             painter.drawEllipse(QPointF(pad.drill_offset_x, pad.drill_offset_y),
                                 r, r)
+
+        # --- Отрисовка текста в паде ---
+        number_str = str(pad.number)
+        # Показываем имя цепи, если оно не безымянное (не начинается с N-)
+        net_str = pad.net_name if pad.net_name and not pad.net_name.startswith("N-") else ""
+
+        if number_str or net_str:
+            font = QFont("Sans")
+            font.setPixelSize(100)
+            fm = QFontMetricsF(font)
+            cap = fm.capHeight() or 70.0
+
+            if net_str:
+                # Две строки: сверху номер, снизу имя цепи
+                max_tw = max(fm.horizontalAdvance(number_str), fm.horizontalAdvance(net_str))
+                target_mm = min(w, h) * 0.3
+                sc = min(target_mm / cap, w * 0.8 / max_tw)
+                
+                painter.save()
+                painter.scale(sc, sc)
+                painter.setFont(font)
+                painter.setPen(QPen(PAD_NUM_COLOR))
+                
+                rect = QRectF(-w/(2*sc), -h/(2*sc), w/sc, h/sc)
+                top_half = QRectF(rect.left(), rect.top(), rect.width(), rect.height() / 2.0)
+                bot_half = QRectF(rect.left(), rect.top() + rect.height() / 2.0, rect.width(), rect.height() / 2.0)
+                
+                painter.drawText(top_half, Qt.AlignCenter, number_str)
+                painter.drawText(bot_half, Qt.AlignCenter, net_str)
+                painter.restore()
+            else:
+                # Одна строка: только номер
+                max_tw = fm.horizontalAdvance(number_str)
+                target_mm = min(w, h) * 0.4  # Уменьшенный размер
+                sc = min(target_mm / cap, w * 0.8 / max_tw)
+                
+                painter.save()
+                painter.scale(sc, sc)
+                painter.setFont(font)
+                painter.setPen(QPen(PAD_NUM_COLOR))
+                
+                rect = QRectF(-w/(2*sc), -h/(2*sc), w/sc, h/sc)
+                painter.drawText(rect, Qt.AlignCenter, number_str)
+                painter.restore()
+                
         painter.restore()
 
     def _draw_track(self, painter, t: BoardTrack):
