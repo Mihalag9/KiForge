@@ -58,16 +58,12 @@ GHOST_TEXT_COLOR = QColor("#808a99")
 
 FREE_ROUND_DIGITS = 4
 
-# --- Индикатор выделения ---------------------------------------------------
 SELECTION_COLOR  = QColor("#4d6bfe")
 SELECTION_PAD_MM = 1.0
 SELECTION_GAP_PX = 3.0
 HANDLE_PX        = 4.0
 
 DEFAULT_TEXT = "Текст"
-
-# Типы текстов, которые нельзя удалять: они критичны для KiCad (T0/T1).
-# Пользовательские надписи (kind="user") удаляются как обычно.
 PROTECTED_TEXT_KINDS = frozenset({"reference", "value"})
 
 
@@ -82,10 +78,6 @@ def _layer_pen(layer: str, width_mm: float) -> QPen:
     pen.setCapStyle(Qt.RoundCap)
     return pen
 
-
-# --------------------------------------------------------------------------
-# Формы
-# --------------------------------------------------------------------------
 
 def _pad_path(shape: str, w: float, h: float) -> QPainterPath:
     path = QPainterPath()
@@ -124,16 +116,10 @@ def _fit_pad_number(text, w, h, target_mm=1.0):
 
 
 def _is_protected_text(text_obj) -> bool:
-    """Текст относится к reference/value — его нельзя удалять из модуля."""
     return getattr(text_obj, "kind", "") in PROTECTED_TEXT_KINDS
 
 
-# --------------------------------------------------------------------------
-# Индикатор выделения
-# --------------------------------------------------------------------------
-
 def _draw_selection(item, painter, option):
-    """Кастомный индикатор выделения: пунктир по контуру + маркеры углов."""
     if not (option.state & QStyle.StateFlag.State_Selected):
         return
 
@@ -165,8 +151,6 @@ def _draw_selection(item, painter, option):
 
 
 class _SelectableMixin:
-    """Общая логика выделения для всех графических элементов модуля."""
-
     def _content_rect(self) -> QRectF:
         return super().boundingRect()
 
@@ -181,13 +165,7 @@ class _SelectableMixin:
         _draw_selection(self, painter, option)
 
 
-# --------------------------------------------------------------------------
-# Диалог ввода текста
-# --------------------------------------------------------------------------
-
 class _NewTextDialog(QDialog):
-    """Модальное окно для инструмента «Текст»."""
-
     def __init__(self, parent=None, default: str = DEFAULT_TEXT):
         super().__init__(parent)
         self.setWindowTitle("Новый текст")
@@ -197,9 +175,7 @@ class _NewTextDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
-
         root.addWidget(QLabel("Текст:"))
-
         self.edit = QLineEdit(default)
         self.edit.selectAll()
         root.addWidget(self.edit)
@@ -224,10 +200,6 @@ class _NewTextDialog(QDialog):
     def text_value(self) -> str:
         return self.edit.text()
 
-
-# --------------------------------------------------------------------------
-# Редактируемые элементы
-# --------------------------------------------------------------------------
 
 class PadItem(_SelectableMixin, QGraphicsPathItem):
     def __init__(self, pad: Pad):
@@ -339,15 +311,6 @@ class ArcItem(_SelectableMixin, QGraphicsPathItem):
 
 
 class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
-    """Текстовый элемент модуля.
-
-    Если ``text_obj.visible == False`` (в .mod хранится как флаг I), в
-    редакторе элемент остаётся видимым, но рисуется приглушённым серым —
-    «ghost»-стиль. Так пользователь видит, что объект есть, может его
-    выделить и вернуть к обычному виду через чекбокс «Видим» в панели
-    свойств. В файл при этом по-прежнему уходит флаг I.
-    """
-
     def __init__(self, t, fp: Footprint):
         super().__init__()
         self.text_obj = t
@@ -364,34 +327,28 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
 
         h = self.text_obj.height if self.text_obj.height > 0 else 1.0
         w = self.text_obj.width  if self.text_obj.width  > 0 else 1.0
-        # W и H в .mod — независимые габариты символа: KiCad растягивает
-        # глиф по обеим осям. Поэтому и мы масштабируем X и Y раздельно.
         sc_y = h / cap
         sc_x = w / cap
 
         if self.text_obj.visible:
-            self.setBrush(QBrush(_layer_qcolor(self.text_obj.layer)))
+            self.setBrush(QBrush(QColor("#ffffff")))
         else:
             self.setBrush(QBrush(GHOST_TEXT_COLOR))
+            
+        self.setVisible(True) 
 
         self.setPos(self.text_obj.x, self.text_obj.y)
         
-        # Центрируем текст точно так же, как в KiCad.
-        # В KiCad координаты X, Y указывают на центр текста.
-        tw = fm.horizontalAdvance(self.text_obj.text)
+        # Правильное центрирование текста (совпадает с KiCad)
+        br = self.boundingRect(); c = br.center()
         tr = QTransform()
         tr.rotate(-self.text_obj.rotation)
         tr.scale(sc_x, sc_y)
-        tr.translate(-tw / 2.0, cap / 2.0)
+        tr.translate(-c.x(), -c.y())
         self.setTransform(tr)
 
 
-# --------------------------------------------------------------------------
-# Сцена
-# --------------------------------------------------------------------------
-
 class FootprintScene(QGraphicsScene):
-    """Сцена модуля. Хранит состояние сетки и привязки к ней."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.grid_step = 1.0
@@ -455,7 +412,6 @@ class FootprintView(QGraphicsView):
         self._group_drag: dict | None = None
         self._scene.selectionChanged.connect(self._on_selection_changed)
 
-    # --- модель и слои ---
     def set_footprint(self, fp: Footprint):
         self.footprint = fp
         self.rebuild()
@@ -486,6 +442,7 @@ class FootprintView(QGraphicsView):
                 continue
             layers = self._layers_of(it)
             if not layers: continue
+            
             it.setVisible(bool(layers & vis))
 
     def _layers_of(self, item):
@@ -507,7 +464,6 @@ class FootprintView(QGraphicsView):
         if self.tool_changed is not None:
             self.tool_changed(tool_id)
 
-    # --- перестроение ---
     def rebuild(self):
         selected = set()
         for it in self._scene.selectedItems():
@@ -541,7 +497,6 @@ class FootprintView(QGraphicsView):
 
         self._apply_layer_visibility()
 
-    # --- удаление ---
     def delete_selected(self):
         if self.cmd_stack is None or self.footprint is None:
             return
@@ -564,7 +519,6 @@ class FootprintView(QGraphicsView):
         if skipped_protected:
             self._notify_protected(skipped_protected, verb="удалить")
 
-    # --- дублирование ---
     def duplicate_selected(self):
         if self.cmd_stack is None or self.footprint is None:
             return
@@ -649,7 +603,6 @@ class FootprintView(QGraphicsView):
                     status().showMessage(msg, 3500)
                     return
 
-    # --- зум ---
     def wheelEvent(self, ev):
         f = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
         self._zoom *= f; self.scale(f, f); self._scene.update()
@@ -661,7 +614,6 @@ class FootprintView(QGraphicsView):
         self.resetTransform(); self.scale(20, 20); self._zoom = 20.0
         self._scene.update()
 
-    # --- мышь ---
     def mousePressEvent(self, ev):
         if self.footprint is None:
             super().mousePressEvent(ev); return
@@ -726,8 +678,6 @@ class FootprintView(QGraphicsView):
         if ev.key() == Qt.Key_Delete:
             self.delete_selected(); return
         super().keyPressEvent(ev)
-
-    # --- выбор из наложенных объектов ---
 
     def _items_at(self, sp) -> list:
         return [it for it in self._scene.items(sp)
@@ -802,7 +752,6 @@ class FootprintView(QGraphicsView):
         it.setSelected(True)
         return True
 
-    # --- групповое перетаскивание ---
     def _selection_rect_scene(self, item) -> QRectF:
         lod = self.transform().m11() or 1.0
         gap = SELECTION_GAP_PX / lod
@@ -906,7 +855,6 @@ class FootprintView(QGraphicsView):
         if moves:
             self._push_command(MoveManyCommand(moves))
 
-    # --- инструменты ---
     def _handle_tool_click(self, pos):
         t = self.current_tool
         if t == "pad":       self._tool_add_pad(pos)
@@ -986,7 +934,6 @@ class FootprintView(QGraphicsView):
                     return
                 self._push_command(ListRemove(self.footprint.texts, it.text_obj)); return
 
-    # --- предпросмотр ---
     def _style_preview(self, it):
         pen = QPen(PREVIEW_COLOR); pen.setCosmetic(True)
         pen.setWidthF(1.5); pen.setStyle(Qt.DashLine)
@@ -1028,7 +975,6 @@ class FootprintView(QGraphicsView):
     def _cancel_pending(self):
         self._clear_preview_item(); self._pending_points = []
 
-    # --- утилиты ---
     def _snap(self, pos):
         if not self._scene.snap_to_grid:
             return QPointF(round(pos.x(), FREE_ROUND_DIGITS),

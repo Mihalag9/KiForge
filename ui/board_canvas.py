@@ -293,7 +293,6 @@ class BoardScene(QGraphicsScene):
 
         # --- Отрисовка текста в паде ---
         number_str = str(pad.number)
-        # Показываем имя цепи, если оно не безымянное (не начинается с N-)
         net_str = pad.net_name if pad.net_name and not pad.net_name.startswith("N-") else ""
 
         if number_str or net_str:
@@ -323,7 +322,7 @@ class BoardScene(QGraphicsScene):
             else:
                 # Одна строка: только номер
                 max_tw = fm.horizontalAdvance(number_str)
-                target_mm = min(w, h) * 0.4  # Уменьшенный размер
+                target_mm = min(w, h) * 0.4
                 sc = min(target_mm / cap, w * 0.8 / max_tw)
                 
                 painter.save()
@@ -384,7 +383,8 @@ class BoardScene(QGraphicsScene):
         if is_hidden:
             painter.setPen(QPen(GHOST_TEXT_COLOR))
         else:
-            painter.setPen(QPen(QColor(_layer_pen(layer, 0.0).color())))
+            # Делаем видимые надписи белыми, чтобы не сливались с желтым контуром
+            painter.setPen(QPen(QColor("#ffffff")))
         
         tw = fm.horizontalAdvance(str(text))
         painter.drawText(QPointF(-tw / 2.0, cap / 2.0), str(text))
