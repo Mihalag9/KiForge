@@ -17,6 +17,7 @@ from ui.canvas import (BG_COLOR, GRID_COLOR, GRID_PEN_WIDTH,
 
 
 RATSNEST_COLOR = QColor(120, 150, 255, 160)
+GHOST_TEXT_COLOR = QColor("#808a99")
 
 
 class BoardScene(QGraphicsScene):
@@ -37,11 +38,8 @@ class BoardScene(QGraphicsScene):
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, BG_COLOR)
         
-        # Отключаем сглаживание для фона, чтобы линии сетки и рамки были 
-        # идеально четкими (в 1 пиксель) и не выглядели "размазанными"
         painter.setRenderHint(QPainter.Antialiasing, False)
         
-        # 1. Сначала рисуем сетку, чтобы она была ПОД рамкой
         if self.grid_visible:
             step = self.grid_step
             px = abs(painter.worldTransform().m11()) or 1.0
@@ -65,7 +63,6 @@ class BoardScene(QGraphicsScene):
             if pts:
                 painter.drawPoints(pts)
 
-        # 2. Рисуем рамку и штамп ПОВЕРХ сетки (оси координат убраны)
         self._draw_sheet(painter)
 
     def _draw_sheet(self, painter):
@@ -73,7 +70,6 @@ class BoardScene(QGraphicsScene):
         if not self.board:
             return
 
-        # 1. Извлекаем размеры страницы из $SHEETDESCR (по умолчанию A4)
         w_mil, h_mil = 11700.0, 8267.0
         sheet_str = self.board.sheet.get("Sheet", "")
         parts = sheet_str.split()
@@ -87,7 +83,6 @@ class BoardScene(QGraphicsScene):
         w_mm = w_mil * 0.0254
         h_mm = h_mil * 0.0254
 
-        # 2. Настройка пера (красный цвет, толщина 1.5 для четкости)
         red = QColor("#ff0000")
         pen = QPen(red)
         pen.setCosmetic(True)
@@ -95,7 +90,6 @@ class BoardScene(QGraphicsScene):
         painter.setPen(pen)
         painter.setBrush(Qt.NoBrush)
 
-        # 3. Внешняя и внутренняя рамки (поля по 10 мм)
         m = 10.0
         rect = QRectF(m, m, w_mm - 2 * m, h_mm - 2 * m)
         painter.drawRect(rect)
@@ -106,7 +100,6 @@ class BoardScene(QGraphicsScene):
                             rect.height() - 2 * m_inner)
         painter.drawRect(rect_inner)
 
-        # 4. Шрифт
         font = QFont("Sans")
         font.setPixelSize(100)
         fm = QFontMetricsF(font)
@@ -126,7 +119,6 @@ class BoardScene(QGraphicsScene):
             painter.drawText(QRectF(0, 0, w / sc, h / sc), align | Qt.AlignVCenter, str(txt))
             painter.restore()
 
-        # 5. Деления по горизонтали (1, 2, 3, 4)
         n_x = 4
         dx = rect.width() / n_x
         for i in range(1, n_x):
@@ -139,7 +131,6 @@ class BoardScene(QGraphicsScene):
         draw_text(str(n_x), rect.right() - dx, rect.top(), dx, m_inner, 1.5, Qt.AlignHCenter)
         draw_text(str(n_x), rect.right() - dx, rect.bottom() - m_inner, dx, m_inner, 1.5, Qt.AlignHCenter)
 
-        # 6. Деления по вертикали (A, B, C, D)
         n_y = 4
         dy = rect.height() / n_y
         letters = "ABCD"
@@ -153,7 +144,6 @@ class BoardScene(QGraphicsScene):
         draw_text(letters[n_y - 1], rect.left(), rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
         draw_text(letters[n_y - 1], rect.right() - m_inner, rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
 
-        # 7. Штамп (Title Block) в правом нижнем углу (уменьшенный до 90x24 мм)
         tb_w = 90.0
         tb_h = 24.0
         tb_right = w_mm - m - m_inner
@@ -163,7 +153,6 @@ class BoardScene(QGraphicsScene):
 
         painter.drawRect(QRectF(tb_left, tb_top, tb_w, tb_h))
 
-        # Горизонтальные линии штампа
         y1 = tb_top + 6.0
         y2 = tb_top + 14.0
         y3 = tb_top + 19.0
@@ -173,19 +162,16 @@ class BoardScene(QGraphicsScene):
         painter.drawLine(QPointF(tb_left, y2), QPointF(tb_left + tb_w, y2))
         painter.drawLine(QPointF(tb_left, y3), QPointF(tb_left + tb_w, y3))
 
-        # Вертикальные разделители (Size/Date/Rev и KiCad/Id)
         x1 = tb_left + 30.0
         x2 = tb_left + 60.0
         
         painter.drawLine(QPointF(x1, y2), QPointF(x1, y3))
         painter.drawLine(QPointF(x2, y2), QPointF(x2, y4))
 
-        # 8. Текст в штампе
         def get_val(key):
             v = self.board.sheet.get(key, "")
             return v.strip('"')
 
-        # Имя файла (извлекаем из заголовка окна, если доступно)
         file_name = "lab2_gr346_br2.brd"
         if self.views():
             title = self.views()[0].window().windowTitle()
@@ -203,13 +189,10 @@ class BoardScene(QGraphicsScene):
 
         draw_text(file_text, tb_left + 2, tb_top + 0.5, tb_w - 4, 3.0, 1.5)
         draw_text(sheet_text, tb_left + 2, tb_top + 2.5, tb_w - 4, 3.0, 1.5)
-        
         draw_text(title_text, tb_left + 2, y1 + 1, tb_w - 4, y2 - y1 - 2, 2.0, Qt.AlignLeft, True)
-        
         draw_text(size_text, tb_left + 2, y2 + 1, x1 - tb_left - 4, y3 - y2 - 2, 1.5)
         draw_text(date_text, x1 + 2, y2 + 1, x2 - x1 - 4, y3 - y2 - 2, 1.5)
         draw_text(rev_text, x2 + 2, y2 + 1, tb_w - (x2 - tb_left) - 4, y3 - y2 - 2, 1.5)
-        
         draw_text(kicad_text, tb_left + 2, y3 + 1, x2 - tb_left - 4, y4 - y3 - 2, 1.5)
         draw_text(id_text, x2 + 2, y3 + 1, tb_w - (x2 - tb_left) - 4, y4 - y3 - 2, 1.5)
 
@@ -217,7 +200,6 @@ class BoardScene(QGraphicsScene):
     def drawForeground(self, painter, rect):
         if self.board is None:
             return
-        # Включаем сглаживание обратно для красивой отрисовки платы (кругов и т.д.)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         if self.show_ratsnest and self.ratsnest:
@@ -272,10 +254,14 @@ class BoardScene(QGraphicsScene):
                 pts = arc_points_from_center(a.cx, a.cy, a.sx, a.sy, a.angle)
                 for p1, p2 in zip(pts, pts[1:]):
                     painter.drawLine(QPointF(*p1), QPointF(*p2))
+                    
         for t in fp.texts:
-            if t.visible and t.layer in self.visible_layers:
+            # Отрисовываем все, но передаем флаг скрытости для цвета
+            if t.layer in self.visible_layers:
+                is_hidden = not getattr(t, "visible", True)
                 self._draw_text(painter, t.text, t.x, t.y, t.width, t.height,
-                                t.rotation, t.layer, t.mirror)
+                                t.rotation, t.layer, t.mirror, is_hidden)
+                                
         if ("F.Cu" if front else "B.Cu") in self.visible_layers:
             for pad in fp.pads:
                 self._draw_pad(painter, pad)
@@ -331,7 +317,7 @@ class BoardScene(QGraphicsScene):
             painter.drawLine(QPointF(d.x1, d.y1), QPointF(d.x2, d.y2))
 
     def _draw_text(self, painter, text, x, y, width, height, rotation,
-                   layer, mirror):
+                   layer, mirror, is_hidden=False):
         if not text:
             return
         painter.save()
@@ -346,9 +332,12 @@ class BoardScene(QGraphicsScene):
         cap = fm.capHeight() or 70.0
         painter.scale((width or 1.0) / cap, (height or 1.0) / cap)
         painter.setFont(font)
-        painter.setPen(QPen(QColor(_layer_pen(layer, 0.0).color())))
         
-        # Центрируем текст, чтобы он совпадал с KiCad
+        if is_hidden:
+            painter.setPen(QPen(GHOST_TEXT_COLOR))
+        else:
+            painter.setPen(QPen(QColor(_layer_pen(layer, 0.0).color())))
+        
         tw = fm.horizontalAdvance(str(text))
         painter.drawText(QPointF(-tw / 2.0, cap / 2.0), str(text))
         
@@ -397,7 +386,6 @@ class BoardView(QGraphicsView):
         if board is None:
             return
             
-        # Вычисляем габариты листа чертежа
         w_mil, h_mil = 11700.0, 8267.0
         sheet_str = board.sheet.get("Sheet", "")
         parts = sheet_str.split()
@@ -411,8 +399,6 @@ class BoardView(QGraphicsView):
         w_mm = w_mil * 0.0254
         h_mm = h_mil * 0.0254
         
-        # Устанавливаем границы сцены равными всему листу, 
-        # чтобы масштабирование и скролл не ограничивались только платой
         rect = QRectF(0, 0, w_mm, h_mm)
         self._scene.content_rect = rect
         self._scene.setSceneRect(rect)
@@ -428,7 +414,6 @@ class BoardView(QGraphicsView):
         self.fitInView(r.adjusted(-2, -2, 2, 2), Qt.KeepAspectRatio)
         self._zoom = self.transform().m11()
 
-    # --- зум ----------------------------------------------------------
     def wheelEvent(self, ev):
         f = 1.15 if ev.angleDelta().y() > 0 else 1 / 1.15
         self._zoom *= f
@@ -448,7 +433,6 @@ class BoardView(QGraphicsView):
     def reset_zoom(self):
         self.fit_to_content()
 
-    # --- панорама средней кнопкой -----------------------------------
     def mousePressEvent(self, ev):
         if ev.button() == Qt.MiddleButton:
             self._panning = True
