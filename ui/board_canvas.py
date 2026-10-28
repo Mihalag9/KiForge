@@ -33,32 +33,39 @@ class BoardScene(QGraphicsScene):
         self.content_rect = QRectF()
         self.setBackgroundBrush(QBrush(BG_COLOR))
 
-    # --- фон и сетка --------------------------------------------------
+    # --- фон, сетка и рамка чертежа -----------------------------------
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, BG_COLOR)
-        if not self.grid_visible:
-            return
-        step = self.grid_step
-        px = abs(painter.worldTransform().m11()) or 1.0
-        while step * px < 7.0 and step < 1000.0:
-            step *= 10.0
-        left = int(rect.left() / step) * step
-        top = int(rect.top() / step) * step
-        pen = QPen(GRID_COLOR)
-        pen.setCosmetic(True)
-        pen.setWidthF(GRID_PEN_WIDTH)
-        pen.setCapStyle(Qt.RoundCap)
-        painter.setPen(pen)
-        pts = []
-        y = top
-        while y < rect.bottom() and len(pts) < 40000:
-            x = left
-            while x < rect.right() and len(pts) < 40000:
-                pts.append(QPointF(x, y))
-                x += step
-            y += step
-        if pts:
-            painter.drawPoints(pts)
+        
+        # Отключаем сглаживание для фона, чтобы линии сетки и рамки были 
+        # идеально четкими (в 1 пиксель) и не выглядели "размазанными"
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        
+        # 1. Сначала рисуем сетку, чтобы она была ПОД рамкой
+        if self.grid_visible:
+            step = self.grid_step
+            px = abs(painter.worldTransform().m11()) or 1.0
+            while step * px < 7.0 and step < 1000.0:
+                step *= 10.0
+            left = int(rect.left() / step) * step
+            top = int(rect.top() / step) * step
+            pen = QPen(GRID_COLOR)
+            pen.setCosmetic(True)
+            pen.setWidthF(GRID_PEN_WIDTH)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            pts = []
+            y = top
+            while y < rect.bottom() and len(pts) < 40000:
+                x = left
+                while x < rect.right() and len(pts) < 40000:
+                    pts.append(QPointF(x, y))
+                    x += step
+                y += step
+            if pts:
+                painter.drawPoints(pts)
+
+        # 2. Оси координат
         axis = QPen(AXIS_COLOR)
         axis.setCosmetic(True)
         axis.setWidthF(1.3)
@@ -66,10 +73,159 @@ class BoardScene(QGraphicsScene):
         painter.drawLine(QPointF(rect.left(), 0.0), QPointF(rect.right(), 0.0))
         painter.drawLine(QPointF(0.0, rect.top()), QPointF(0.0, rect.bottom()))
 
-    # --- содержимое ---------------------------------------------------
+        # 3. Рисуем рамку и штамп ПОВЕРХ сетки
+        self._draw_sheet(painter)
+
+    def _draw_sheet(self, painter):
+        """Отрисовка стандартной рамки чертежа KiCad (A4) и штампа."""
+        if not self.board:
+            return
+
+        # 1. Извлекаем размеры страницы из $SHEETDESCR (по умолчанию A4)
+        w_mil, h_mil = 11700.0, 8267.0
+        sheet_str = self.board.sheet.get("Sheet", "")
+        parts = sheet_str.split()
+        if len(parts) >= 3:
+            try:
+                w_mil = float(parts[-2])
+                h_mil = float(parts[-1])
+            except ValueError:
+                pass
+                
+        w_mm = w_mil * 0.0254
+        h_mm = h_mil * 0.0254
+
+        # 2. Настройка пера (красный цвет, толщина 1.5 для четкости)
+        red = QColor("#ff0000")
+        pen = QPen(red)
+        pen.setCosmetic(True)
+        pen.setWidthF(1.5)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        # 3. Внешняя и внутренняя рамки (поля по 10 мм)
+        m = 10.0
+        rect = QRectF(m, m, w_mm - 2 * m, h_mm - 2 * m)
+        painter.drawRect(rect)
+        
+        m_inner = 2.0
+        rect_inner = QRectF(m + m_inner, m + m_inner,
+                            rect.width() - 2 * m_inner,
+                            rect.height() - 2 * m_inner)
+        painter.drawRect(rect_inner)
+
+        # 4. Шрифт
+        font = QFont("Sans")
+        font.setPixelSize(100)
+        fm = QFontMetricsF(font)
+        cap = fm.capHeight() or 70.0
+
+        def draw_text(txt, x, y, w, h, size_mm, align=Qt.AlignLeft, bold=False):
+            if not txt:
+                return
+            painter.save()
+            sc = size_mm / cap
+            painter.translate(x, y)
+            painter.scale(sc, sc)
+            f = QFont(font)
+            f.setBold(bold)
+            painter.setFont(f)
+            painter.setPen(QPen(red))
+            painter.drawText(QRectF(0, 0, w / sc, h / sc), align | Qt.AlignVCenter, str(txt))
+            painter.restore()
+
+        # 5. Деления по горизонтали (1, 2, 3, 4)
+        n_x = 4
+        dx = rect.width() / n_x
+        for i in range(1, n_x):
+            x = rect.left() + i * dx
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.top() + m_inner))
+            painter.drawLine(QPointF(x, rect.bottom() - m_inner), QPointF(x, rect.bottom()))
+            draw_text(str(i), x - dx, rect.top(), dx, m_inner, 1.5, Qt.AlignHCenter)
+            draw_text(str(i), x - dx, rect.bottom() - m_inner, dx, m_inner, 1.5, Qt.AlignHCenter)
+            
+        draw_text(str(n_x), rect.right() - dx, rect.top(), dx, m_inner, 1.5, Qt.AlignHCenter)
+        draw_text(str(n_x), rect.right() - dx, rect.bottom() - m_inner, dx, m_inner, 1.5, Qt.AlignHCenter)
+
+        # 6. Деления по вертикали (A, B, C, D)
+        n_y = 4
+        dy = rect.height() / n_y
+        letters = "ABCD"
+        for i in range(1, n_y):
+            y = rect.top() + i * dy
+            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.left() + m_inner, y))
+            painter.drawLine(QPointF(rect.right() - m_inner, y), QPointF(rect.right(), y))
+            draw_text(letters[i - 1], rect.left(), y - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
+            draw_text(letters[i - 1], rect.right() - m_inner, y - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
+            
+        draw_text(letters[n_y - 1], rect.left(), rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
+        draw_text(letters[n_y - 1], rect.right() - m_inner, rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
+
+        # 7. Штамп (Title Block) в правом нижнем углу (уменьшенный до 90x24 мм)
+        tb_w = 90.0
+        tb_h = 24.0
+        tb_right = w_mm - m - m_inner
+        tb_bottom = h_mm - m - m_inner
+        tb_left = tb_right - tb_w
+        tb_top = tb_bottom - tb_h
+
+        painter.drawRect(QRectF(tb_left, tb_top, tb_w, tb_h))
+
+        # Горизонтальные линии штампа
+        y1 = tb_top + 6.0
+        y2 = tb_top + 14.0
+        y3 = tb_top + 19.0
+        y4 = tb_bottom
+        
+        painter.drawLine(QPointF(tb_left, y1), QPointF(tb_left + tb_w, y1))
+        painter.drawLine(QPointF(tb_left, y2), QPointF(tb_left + tb_w, y2))
+        painter.drawLine(QPointF(tb_left, y3), QPointF(tb_left + tb_w, y3))
+
+        # Вертикальные разделители (Size/Date/Rev и KiCad/Id)
+        x1 = tb_left + 30.0
+        x2 = tb_left + 60.0
+        
+        painter.drawLine(QPointF(x1, y2), QPointF(x1, y3))
+        painter.drawLine(QPointF(x2, y2), QPointF(x2, y4))
+
+        # 8. Текст в штампе
+        def get_val(key):
+            v = self.board.sheet.get(key, "")
+            return v.strip('"')
+
+        # Имя файла (извлекаем из заголовка окна, если доступно)
+        file_name = "lab2_gr346_br2.brd"
+        if self.views():
+            title = self.views()[0].window().windowTitle()
+            if " — плата: " in title:
+                file_name = title.split(" — плата: ")[1]
+
+        file_text = "File: " + file_name
+        sheet_text = "Sheet: 1/1"
+        title_text = "Title: " + get_val("Title")
+        size_text = "Size: A4"
+        date_text = "Date: " + get_val("Date")
+        rev_text = "Rev: " + get_val("Rev")
+        kicad_text = "KiCad E.D.A. pcbnew (2011-04-29 BZR 2986)-stable"
+        id_text = "Id: 1/1"
+
+        draw_text(file_text, tb_left + 2, tb_top + 0.5, tb_w - 4, 3.0, 1.5)
+        draw_text(sheet_text, tb_left + 2, tb_top + 2.5, tb_w - 4, 3.0, 1.5)
+        
+        draw_text(title_text, tb_left + 2, y1 + 1, tb_w - 4, y2 - y1 - 2, 2.0, Qt.AlignLeft, True)
+        
+        draw_text(size_text, tb_left + 2, y2 + 1, x1 - tb_left - 4, y3 - y2 - 2, 1.5)
+        draw_text(date_text, x1 + 2, y2 + 1, x2 - x1 - 4, y3 - y2 - 2, 1.5)
+        draw_text(rev_text, x2 + 2, y2 + 1, tb_w - (x2 - tb_left) - 4, y3 - y2 - 2, 1.5)
+        
+        draw_text(kicad_text, tb_left + 2, y3 + 1, x2 - tb_left - 4, y4 - y3 - 2, 1.5)
+        draw_text(id_text, x2 + 2, y3 + 1, tb_w - (x2 - tb_left) - 4, y4 - y3 - 2, 1.5)
+
+    # --- содержимое (плата) -------------------------------------------
     def drawForeground(self, painter, rect):
         if self.board is None:
             return
+        # Включаем сглаживание обратно для красивой отрисовки платы (кругов и т.д.)
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         if self.show_ratsnest and self.ratsnest:
@@ -248,34 +404,26 @@ class BoardView(QGraphicsView):
         board = self._scene.board
         if board is None:
             return
-        xs: list[float] = []
-        ys: list[float] = []
-        for fp in board.modules:
-            px, py, _angle, _mirror = module_transform(fp)
-            xs.append(px)
-            ys.append(py)
-            for pad in fp.pads:
-                ax, ay = module_pad_position(fp, pad)
-                xs.extend((ax - pad.width / 2.0, ax + pad.width / 2.0))
-                ys.extend((ay - pad.height / 2.0, ay + pad.height / 2.0))
-            for ln in fp.lines:
-                xs.extend((px + ln.x1, px + ln.x2))
-                ys.extend((py + ln.y1, py + ln.y2))
-        for t in board.tracks:
-            xs.extend((t.x1, t.x2))
-            ys.extend((t.y1, t.y2))
-        for d in board.drawings:
-            xs.extend((d.x1, d.x2))
-            ys.extend((d.y1, d.y2))
-        if not xs or not ys:
-            self._scene.content_rect = QRectF(-10, -10, 20, 20)
-            self._scene.setSceneRect(self._scene.content_rect)
-            return
-        rect = QRectF(min(xs), min(ys),
-                      max(max(xs) - min(xs), 1.0),
-                      max(max(ys) - min(ys), 1.0))
+            
+        # Вычисляем габариты листа чертежа
+        w_mil, h_mil = 11700.0, 8267.0
+        sheet_str = board.sheet.get("Sheet", "")
+        parts = sheet_str.split()
+        if len(parts) >= 3:
+            try:
+                w_mil = float(parts[-2])
+                h_mil = float(parts[-1])
+            except ValueError:
+                pass
+                
+        w_mm = w_mil * 0.0254
+        h_mm = h_mil * 0.0254
+        
+        # Устанавливаем границы сцены равными всему листу, 
+        # чтобы масштабирование и скролл не ограничивались только платой
+        rect = QRectF(0, 0, w_mm, h_mm)
         self._scene.content_rect = rect
-        self._scene.setSceneRect(rect.adjusted(-5, -5, 5, 5))
+        self._scene.setSceneRect(rect)
 
     def fit_to_content(self, attempt=0):
         r = self._scene.content_rect
