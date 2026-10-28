@@ -12,7 +12,7 @@ from core.arc_math import arc_points_from_center
 from core.board import (Board, BoardDrawing, BoardText, BoardTrack,
                         module_pad_position, module_transform, ratsnest_segments)
 from core.footprint import Footprint, Pad
-from ui.canvas import (AXIS_COLOR, BG_COLOR, GRID_COLOR, GRID_PEN_WIDTH,
+from ui.canvas import (BG_COLOR, GRID_COLOR, GRID_PEN_WIDTH,
                        PAD_COLOR, _pad_path, _layer_pen)
 
 
@@ -65,15 +65,7 @@ class BoardScene(QGraphicsScene):
             if pts:
                 painter.drawPoints(pts)
 
-        # 2. Оси координат
-        axis = QPen(AXIS_COLOR)
-        axis.setCosmetic(True)
-        axis.setWidthF(1.3)
-        painter.setPen(axis)
-        painter.drawLine(QPointF(rect.left(), 0.0), QPointF(rect.right(), 0.0))
-        painter.drawLine(QPointF(0.0, rect.top()), QPointF(0.0, rect.bottom()))
-
-        # 3. Рисуем рамку и штамп ПОВЕРХ сетки
+        # 2. Рисуем рамку и штамп ПОВЕРХ сетки (оси координат убраны)
         self._draw_sheet(painter)
 
     def _draw_sheet(self, painter):
