@@ -199,7 +199,11 @@ class BoardScene(QGraphicsScene):
         painter.scale((width or 1.0) / cap, (height or 1.0) / cap)
         painter.setFont(font)
         painter.setPen(QPen(QColor(_layer_pen(layer, 0.0).color())))
-        painter.drawText(QPointF(0.0, 0.0), str(text))
+        
+        # Центрируем текст, чтобы он совпадал с KiCad
+        tw = fm.horizontalAdvance(str(text))
+        painter.drawText(QPointF(-tw / 2.0, cap / 2.0), str(text))
+        
         painter.restore()
 
 

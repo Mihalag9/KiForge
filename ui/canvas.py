@@ -79,9 +79,6 @@ def _layer_pen(layer: str, width_mm: float) -> QPen:
     pen = QPen(_layer_qcolor(layer))
     pen.setCosmetic(False)
     pen.setWidthF(max(width_mm, 0.02))
-    # KiCad рисует концы линий закруглёнными, а не обрезанными «по
-    # линейке». FlatCap даёт острые срезы; RoundCap — полукруг на
-    # каждом конце, как видит пользователь в самом KiCad.
     pen.setCapStyle(Qt.RoundCap)
     return pen
 
@@ -368,8 +365,7 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
         h = self.text_obj.height if self.text_obj.height > 0 else 1.0
         w = self.text_obj.width  if self.text_obj.width  > 0 else 1.0
         # W и H в .mod — независимые габариты символа: KiCad растягивает
-        # глиф по обеим осям. Поэтому и мы масштабируем X и Y раздельно,
-        # а не одним общим коэффициентом из высоты.
+        # глиф по обеим осям. Поэтому и мы масштабируем X и Y раздельно.
         sc_y = h / cap
         sc_x = w / cap
 
@@ -379,11 +375,14 @@ class TextItem(_SelectableMixin, QGraphicsSimpleTextItem):
             self.setBrush(QBrush(GHOST_TEXT_COLOR))
 
         self.setPos(self.text_obj.x, self.text_obj.y)
-        br = self.boundingRect(); c = br.center()
+        
+        # Центрируем текст точно так же, как в KiCad.
+        # В KiCad координаты X, Y указывают на центр текста.
+        tw = fm.horizontalAdvance(self.text_obj.text)
         tr = QTransform()
         tr.rotate(-self.text_obj.rotation)
         tr.scale(sc_x, sc_y)
-        tr.translate(-c.x(), -c.y())
+        tr.translate(-tw / 2.0, cap / 2.0)
         self.setTransform(tr)
 
 
@@ -544,12 +543,6 @@ class FootprintView(QGraphicsView):
 
     # --- удаление ---
     def delete_selected(self):
-        """Удалить выделенные элементы.
-
-        Reference и value текста пропускаются: без них модуль в KiCad
-        перестанет нормально открываться (не подставится обозначение и
-        номинал). Пользовательские тексты удаляются как раньше.
-        """
         if self.cmd_stack is None or self.footprint is None:
             return
         skipped_protected = 0
@@ -573,14 +566,6 @@ class FootprintView(QGraphicsView):
 
     # --- дублирование ---
     def duplicate_selected(self):
-        """Ctrl+D: скопировать выделенные элементы со смещением на шаг сетки.
-
-        Reference и value не дублируются — в .mod может быть только один T0
-        и один T1; второй сделает модуль невалидным для KiCad. Остальные
-        элементы копируются, номера новых падов продолжают нумерацию без
-        конфликтов со старыми. Все копии добавляются одной MacroCommand,
-        поэтому Ctrl+Z снимает всю операцию целиком.
-        """
         if self.cmd_stack is None or self.footprint is None:
             return
 
@@ -589,14 +574,9 @@ class FootprintView(QGraphicsView):
         if not selected:
             return
 
-        # Смещение = текущий шаг сетки. Если привязка выключена — берём
-        # мягкий дефолт 0.254 мм, чтобы копия не легла ровно на оригинал.
         step = self._scene.grid_step if self._scene.snap_to_grid else 0.254
         dx = dy = step
 
-        # Свободный номер для следующего пада. Считаем заранее: в цикле
-        # footprint ещё не содержит копий, поэтому next_pad_number() вернёт
-        # одно и то же значение при каждом вызове.
         max_n = 0
         for p in self.footprint.pads:
             try:
@@ -641,9 +621,6 @@ class FootprintView(QGraphicsView):
 
         if sub:
             self._push_command(MacroCommand(sub))
-            # После push cmd_stack.do() модель изменилась, а on_change
-            # синхронно вызвал rebuild() — сцена уже пересобрана. Значит
-            # можно искать новые items среди уже существующих.
             new_ids = set()
             for c in sub:
                 obj = getattr(c, "obj", None)
@@ -661,7 +638,6 @@ class FootprintView(QGraphicsView):
             self._notify_protected(skipped_protected, verb="дублировать")
 
     def _notify_protected(self, count: int, verb: str = "удалить"):
-        """Сообщить пользователю, что reference/value нельзя удалить/дублировать."""
         msg = (f"Текст «обозначение»/«значение» {verb} нельзя "
                f"({count} пропущено) — это обязательные поля KiCad.")
         scene = self.scene()
@@ -702,18 +678,11 @@ class FootprintView(QGraphicsView):
                 self._cancel_pending(); ev.accept(); return
             super().mousePressEvent(ev); return
 
-        # --- режим «Выбор» ---
-        # Alt+клик — циклический перебор объектов под курсором. Удобно,
-        # когда нужный элемент скрыт под другими и его не «достать»
-        # обычным кликом.
         if ev.button() == Qt.LeftButton and (ev.modifiers() & Qt.AltModifier):
             sp = self.mapToScene(ev.position().toPoint())
             if self._cycle_overlapping(sp):
                 ev.accept(); return
 
-        # Правый клик — выпадающее меню со списком всех объектов под
-        # курсором. Это альтернатива Alt+клику: удобно, когда объектов
-        # много и хочется выбрать сразу.
         if ev.button() == Qt.RightButton:
             sp = self.mapToScene(ev.position().toPoint())
             if self._show_overlap_menu(sp, ev.globalPosition().toPoint(),
@@ -761,18 +730,10 @@ class FootprintView(QGraphicsView):
     # --- выбор из наложенных объектов ---
 
     def _items_at(self, sp) -> list:
-        """Все перетаскиваемые объекты под точкой, сверху вниз.
-
-        `QGraphicsScene.items(pos)` возвращает элементы в порядке
-        «верхний → нижний» с учётом Z-порядка, что и нужно для меню
-        и для циклического перебора: первый элемент — тот, который
-        пользователь видит поверх остальных.
-        """
         return [it for it in self._scene.items(sp)
                 if isinstance(it, DRAGGABLE)]
 
     def _describe(self, it) -> str:
-        """Короткое человекочитаемое описание объекта для меню."""
         if isinstance(it, PadItem):
             return f"Пад {it.pad.number} ({it.pad.shape})"
         if isinstance(it, LineItem):
@@ -790,15 +751,6 @@ class FootprintView(QGraphicsView):
         return "Объект"
 
     def _cycle_overlapping(self, sp) -> bool:
-        """Alt+клик: переключиться на следующий объект под курсором.
-
-        Логика:
-          * если под курсором ничего нет — ничего не делаем, даём
-            обычному клику шанс начать rubber band;
-          * если ни один объект не выделен — выделяем верхний;
-          * если что-то уже выделено — переходим к следующему
-            в списке `_items_at` (сверху вниз), зацикливаясь в конце.
-        """
         items = self._items_at(sp)
         if not items:
             return False
@@ -819,13 +771,6 @@ class FootprintView(QGraphicsView):
         return True
 
     def _show_overlap_menu(self, sp, global_pos, modifiers) -> bool:
-        """Правый клик: показать меню со списком объектов под курсором.
-
-        Возвращает True, если меню действительно было показано (то есть
-        под курсором есть хотя бы один объект) — тогда вызывающая
-        сторона поглотит событие. Иначе возвращает False, чтобы
-        правый клик никак не мешал.
-        """
         items = self._items_at(sp)
         if not items:
             return False
@@ -846,14 +791,12 @@ class FootprintView(QGraphicsView):
 
         chosen = menu.exec(global_pos)
         if chosen is None:
-            return True  # меню закрыто без выбора — событие поглощено
+            return True
         idx = chosen.data()
         if idx is None:
             return True
         it = items[idx]
 
-        # Ctrl/Shift при правом клике = добавить к выделению, иначе —
-        # заменить его выбранным объектом.
         if not (modifiers & (Qt.ControlModifier | Qt.ShiftModifier)):
             self._scene.clearSelection()
         it.setSelected(True)
@@ -861,28 +804,15 @@ class FootprintView(QGraphicsView):
 
     # --- групповое перетаскивание ---
     def _selection_rect_scene(self, item) -> QRectF:
-        """Рамка выделения элемента в координатах сцены.
-
-        Это тот же зазор, что рисует _draw_selection: SELECTION_GAP_PX
-        экранных пикселей вокруг видимого контура. Переводим их в
-        сценовые единицы через текущий масштаб вида, чтобы попадание
-        мышью совпадало с тем, что видит пользователь.
-        """
         lod = self.transform().m11() or 1.0
         gap = SELECTION_GAP_PX / lod
         rect = item.mapRectToScene(item._content_rect())
         return rect.adjusted(-gap, -gap, gap, gap)
 
     def _hit_draggable(self, sp):
-        # 1) Точное попадание в контур (тело) элемента — приоритет выше,
-        #    чтобы кликом по видимой части соседнего объекта можно было
-        #    переключить выделение.
         for it in self._scene.items(sp):
             if isinstance(it, DRAGGABLE):
                 return it
-        # 2) Клик в пустой зоне рамки выделения уже выделенного элемента —
-        #    тоже начинает drag. Если выделено несколько, вернём первый
-        #    подходящий; _start_group_drag подхватит всю группу.
         for it in self._scene.selectedItems():
             if not isinstance(it, DRAGGABLE):
                 continue
@@ -898,9 +828,6 @@ class FootprintView(QGraphicsView):
         sel = [it for it in self._scene.selectedItems() if isinstance(it, DRAGGABLE)]
         if not sel: return False
         origins = {id(it): self._snapshot(it) for it in sel}
-        # Якорь — элемент, за который схватили мышью. Его позицию будем
-        # снапить к сетке, а остальных сдвигать на получившуюся разницу,
-        # чтобы группа двигалась жёстко и не рассыпалась.
         ax, ay = hit.pos().x(), hit.pos().y()
         self._group_drag = {
             "start": sp, "items": sel, "origins": origins,
@@ -936,10 +863,6 @@ class FootprintView(QGraphicsView):
         if self._scene.snap_to_grid:
             step = self._scene.grid_step
             ax, ay = self._group_drag["anchor_orig"]
-            # Куда бы встал якорь без снапа — и потом округляем эту
-            # АБСОЛЮТНУЮ позицию к сетке. Отсюда получаем снапнутое
-            # смещение группы. Так объект всегда встаёт на узел, а не
-            # «прыгает относительно старого места».
             target_x = ax + raw_dx
             target_y = ay + raw_dy
             snapped_x = round(target_x / step) * step
@@ -1048,10 +971,6 @@ class FootprintView(QGraphicsView):
         self._push_command(SetOriginCommand(self.footprint, pos.x(), pos.y()))
 
     def _tool_delete(self, pos):
-        """Удалить верхний элемент под курсором.
-
-        Reference/value пропускаются: это обязательные поля KiCad.
-        """
         for it in self._scene.items(pos):
             if isinstance(it, PadItem):
                 self._push_command(ListRemove(self.footprint.pads, it.pad)); return
@@ -1071,8 +990,6 @@ class FootprintView(QGraphicsView):
     def _style_preview(self, it):
         pen = QPen(PREVIEW_COLOR); pen.setCosmetic(True)
         pen.setWidthF(1.5); pen.setStyle(Qt.DashLine)
-        # Тот же RoundCap, что и у настоящих линий, — превью не должно
-        # выглядеть резче, чем результат клика.
         pen.setCapStyle(Qt.RoundCap)
         it.setPen(pen); it.setZValue(1000)
 
