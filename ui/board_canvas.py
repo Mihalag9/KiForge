@@ -259,7 +259,7 @@ class BoardScene(QGraphicsScene):
             if t.layer in self.visible_layers:
                 is_hidden = not getattr(t, "visible", True)
                 self._draw_text(painter, t.text, t.x, t.y, t.width, t.height,
-                                t.rotation, t.layer, t.mirror, is_hidden)
+                                t.rotation - angle, t.layer, t.mirror, is_hidden)
                                 
         if ("F.Cu" if front else "B.Cu") in self.visible_layers:
             for pad in fp.pads:
