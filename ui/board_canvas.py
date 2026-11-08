@@ -1,4 +1,5 @@
 """Просмотр legacy-платы: сцена с сеткой, слоями и ratsnest."""
+
 from __future__ import annotations
 
 import math
@@ -14,7 +15,6 @@ from core.board import (Board, BoardDrawing, BoardText, BoardTrack,
 from core.footprint import Footprint, Pad
 from ui.canvas import (BG_COLOR, GRID_COLOR, GRID_PEN_WIDTH,
                        PAD_COLOR, _pad_path, _layer_pen, PAD_NUM_COLOR)
-
 
 RATSNEST_COLOR = QColor(120, 150, 255, 160)
 GHOST_TEXT_COLOR = QColor("#808a99")
@@ -37,9 +37,7 @@ class BoardScene(QGraphicsScene):
     # --- фон, сетка и рамка чертежа -----------------------------------
     def drawBackground(self, painter, rect):
         painter.fillRect(rect, BG_COLOR)
-        
         painter.setRenderHint(QPainter.Antialiasing, False)
-        
         if self.grid_visible:
             step = self.grid_step
             px = abs(painter.worldTransform().m11()) or 1.0
@@ -62,14 +60,12 @@ class BoardScene(QGraphicsScene):
                 y += step
             if pts:
                 painter.drawPoints(pts)
-
         self._draw_sheet(painter)
 
     def _draw_sheet(self, painter):
         """Отрисовка стандартной рамки чертежа KiCad (A4) и штампа."""
         if not self.board:
             return
-
         w_mil, h_mil = 11700.0, 8267.0
         sheet_str = self.board.sheet.get("Sheet", "")
         parts = sheet_str.split()
@@ -79,7 +75,6 @@ class BoardScene(QGraphicsScene):
                 h_mil = float(parts[-1])
             except ValueError:
                 pass
-                
         w_mm = w_mil * 0.0254
         h_mm = h_mil * 0.0254
 
@@ -93,7 +88,7 @@ class BoardScene(QGraphicsScene):
         m = 10.0
         rect = QRectF(m, m, w_mm - 2 * m, h_mm - 2 * m)
         painter.drawRect(rect)
-        
+
         m_inner = 2.0
         rect_inner = QRectF(m + m_inner, m + m_inner,
                             rect.width() - 2 * m_inner,
@@ -127,7 +122,6 @@ class BoardScene(QGraphicsScene):
             painter.drawLine(QPointF(x, rect.bottom() - m_inner), QPointF(x, rect.bottom()))
             draw_text(str(i), x - dx, rect.top(), dx, m_inner, 1.5, Qt.AlignHCenter)
             draw_text(str(i), x - dx, rect.bottom() - m_inner, dx, m_inner, 1.5, Qt.AlignHCenter)
-            
         draw_text(str(n_x), rect.right() - dx, rect.top(), dx, m_inner, 1.5, Qt.AlignHCenter)
         draw_text(str(n_x), rect.right() - dx, rect.bottom() - m_inner, dx, m_inner, 1.5, Qt.AlignHCenter)
 
@@ -140,7 +134,6 @@ class BoardScene(QGraphicsScene):
             painter.drawLine(QPointF(rect.right() - m_inner, y), QPointF(rect.right(), y))
             draw_text(letters[i - 1], rect.left(), y - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
             draw_text(letters[i - 1], rect.right() - m_inner, y - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
-            
         draw_text(letters[n_y - 1], rect.left(), rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
         draw_text(letters[n_y - 1], rect.right() - m_inner, rect.bottom() - dy, m_inner, dy, 1.5, Qt.AlignHCenter)
 
@@ -150,21 +143,17 @@ class BoardScene(QGraphicsScene):
         tb_bottom = h_mm - m - m_inner
         tb_left = tb_right - tb_w
         tb_top = tb_bottom - tb_h
-
         painter.drawRect(QRectF(tb_left, tb_top, tb_w, tb_h))
 
         y1 = tb_top + 6.0
         y2 = tb_top + 14.0
         y3 = tb_top + 19.0
         y4 = tb_bottom
-        
         painter.drawLine(QPointF(tb_left, y1), QPointF(tb_left + tb_w, y1))
         painter.drawLine(QPointF(tb_left, y2), QPointF(tb_left + tb_w, y2))
         painter.drawLine(QPointF(tb_left, y3), QPointF(tb_left + tb_w, y3))
-
         x1 = tb_left + 30.0
         x2 = tb_left + 60.0
-        
         painter.drawLine(QPointF(x1, y2), QPointF(x1, y3))
         painter.drawLine(QPointF(x2, y2), QPointF(x2, y4))
 
@@ -177,7 +166,6 @@ class BoardScene(QGraphicsScene):
             title = self.views()[0].window().windowTitle()
             if " — плата: " in title:
                 file_name = title.split(" — плата: ")[1]
-
         file_text = "File: " + file_name
         sheet_text = "Sheet: 1/1"
         title_text = "Title: " + get_val("Title")
@@ -201,7 +189,6 @@ class BoardScene(QGraphicsScene):
         if self.board is None:
             return
         painter.setRenderHint(QPainter.Antialiasing, True)
-
         if self.show_ratsnest and self.ratsnest:
             self._draw_ratsnest(painter)
         for fp in self.board.modules:
@@ -232,6 +219,7 @@ class BoardScene(QGraphicsScene):
     def _draw_module(self, painter, fp: Footprint):
         px, py, angle, mirrored = module_transform(fp)
         front = fp.po_layer != 0
+
         painter.save()
         painter.translate(px, py)
         if mirrored:
@@ -254,28 +242,33 @@ class BoardScene(QGraphicsScene):
                 pts = arc_points_from_center(a.cx, a.cy, a.sx, a.sy, a.angle)
                 for p1, p2 in zip(pts, pts[1:]):
                     painter.drawLine(QPointF(*p1), QPointF(*p2))
-                    
         for t in fp.texts:
             if t.layer in self.visible_layers:
                 is_hidden = not getattr(t, "visible", True)
                 self._draw_text(painter, t.text, t.x, t.y, t.width, t.height,
                                 t.rotation - angle, t.layer, t.mirror, is_hidden)
-                                
+
         if ("F.Cu" if front else "B.Cu") in self.visible_layers:
             for pad in fp.pads:
-                self._draw_pad(painter, pad)
+                self._draw_pad(painter, pad, angle)
         painter.restore()
 
-    def _draw_pad(self, painter, pad: Pad):
+    def _draw_pad(self, painter, pad: Pad, module_angle: float = 0.0):
+        w = max(pad.width, 0.01)
+        h = max(pad.height, 0.01)
+
+        # --- тело пада и отверстие ---
+        # Ориентация пада в .brd хранится АБСОЛЮТНОЙ (поворот модуля уже
+        # включён в pad_angle), а координаты пада — локальные. Мы уже
+        # находимся в повёрнутом контексте модуля (rotate(-module_angle)),
+        # поэтому добавляем компенсацию: итоговый поворот фигуры пада на
+        # экране равен ровно сохранённому pad_angle.
         painter.save()
         painter.translate(pad.x, pad.y)
         if pad.pad_angle:
-            painter.rotate(-pad.pad_angle / 10.0)
-            
-        w = max(pad.width, 0.01)
-        h = max(pad.height, 0.01)
+            painter.rotate(module_angle - pad.pad_angle / 10.0)
+
         path = _pad_path(pad.shape, w, h)
-        
         fill = QColor(PAD_COLOR)
         fill.setAlpha(220)
         pen = QPen(PAD_COLOR.darker(140))
@@ -283,39 +276,48 @@ class BoardScene(QGraphicsScene):
         painter.setPen(pen)
         painter.setBrush(QBrush(fill))
         painter.drawPath(path)
-        
+
         if pad.has_drill:
             r = pad.drill / 2.0
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(BG_COLOR))
             painter.drawEllipse(QPointF(pad.drill_offset_x, pad.drill_offset_y),
                                 r, r)
+        painter.restore()
 
-        # --- Отрисовка текста в паде ---
+        # --- подпись пада (номер и имя цепи) ---
+        # KiCad рисует подписи падов всегда вертикально в экранных
+        # координатах: на них не влияет ни поворот модуля, ни поворот
+        # самого пада. Заходим в центр пада заново и компенсируем ТОЛЬКО
+        # поворот модуля (зеркалирование для B.Cu сохраняем — это вид
+        # «сквозь плату»).
+        painter.save()
+        painter.translate(pad.x, pad.y)
+        if module_angle:
+            painter.rotate(module_angle)
+
         number_str = str(pad.number)
         net_str = pad.net_name if pad.net_name and not pad.net_name.startswith("N-") else ""
-
         if number_str or net_str:
             font = QFont("Sans")
             font.setPixelSize(100)
             fm = QFontMetricsF(font)
             cap = fm.capHeight() or 70.0
-
             if net_str:
                 # Две строки: сверху номер, снизу имя цепи
-                max_tw = max(fm.horizontalAdvance(number_str), fm.horizontalAdvance(net_str))
+                max_tw = max(fm.horizontalAdvance(number_str),
+                             fm.horizontalAdvance(net_str))
                 target_mm = min(w, h) * 0.3
                 sc = min(target_mm / cap, w * 0.8 / max_tw)
-                
                 painter.save()
                 painter.scale(sc, sc)
                 painter.setFont(font)
                 painter.setPen(QPen(PAD_NUM_COLOR))
-                
-                rect = QRectF(-w/(2*sc), -h/(2*sc), w/sc, h/sc)
-                top_half = QRectF(rect.left(), rect.top(), rect.width(), rect.height() / 2.0)
-                bot_half = QRectF(rect.left(), rect.top() + rect.height() / 2.0, rect.width(), rect.height() / 2.0)
-                
+                rect = QRectF(-w / (2 * sc), -h / (2 * sc), w / sc, h / sc)
+                top_half = QRectF(rect.left(), rect.top(),
+                                  rect.width(), rect.height() / 2.0)
+                bot_half = QRectF(rect.left(), rect.top() + rect.height() / 2.0,
+                                  rect.width(), rect.height() / 2.0)
                 painter.drawText(top_half, Qt.AlignCenter, number_str)
                 painter.drawText(bot_half, Qt.AlignCenter, net_str)
                 painter.restore()
@@ -324,16 +326,13 @@ class BoardScene(QGraphicsScene):
                 max_tw = fm.horizontalAdvance(number_str)
                 target_mm = min(w, h) * 0.4
                 sc = min(target_mm / cap, w * 0.8 / max_tw)
-                
                 painter.save()
                 painter.scale(sc, sc)
                 painter.setFont(font)
                 painter.setPen(QPen(PAD_NUM_COLOR))
-                
-                rect = QRectF(-w/(2*sc), -h/(2*sc), w/sc, h/sc)
+                rect = QRectF(-w / (2 * sc), -h / (2 * sc), w / sc, h / sc)
                 painter.drawText(rect, Qt.AlignCenter, number_str)
                 painter.restore()
-                
         painter.restore()
 
     def _draw_track(self, painter, t: BoardTrack):
@@ -379,16 +378,13 @@ class BoardScene(QGraphicsScene):
         cap = fm.capHeight() or 70.0
         painter.scale((width or 1.0) / cap, (height or 1.0) / cap)
         painter.setFont(font)
-        
         if is_hidden:
             painter.setPen(QPen(GHOST_TEXT_COLOR))
         else:
             # Делаем видимые надписи белыми, чтобы не сливались с желтым контуром
             painter.setPen(QPen(QColor("#ffffff")))
-        
         tw = fm.horizontalAdvance(str(text))
         painter.drawText(QPointF(-tw / 2.0, cap / 2.0), str(text))
-        
         painter.restore()
 
 
@@ -433,7 +429,6 @@ class BoardView(QGraphicsView):
         board = self._scene.board
         if board is None:
             return
-            
         w_mil, h_mil = 11700.0, 8267.0
         sheet_str = board.sheet.get("Sheet", "")
         parts = sheet_str.split()
@@ -443,10 +438,8 @@ class BoardView(QGraphicsView):
                 h_mil = float(parts[-1])
             except ValueError:
                 pass
-                
         w_mm = w_mil * 0.0254
         h_mm = h_mil * 0.0254
-        
         rect = QRectF(0, 0, w_mm, h_mm)
         self._scene.content_rect = rect
         self._scene.setSceneRect(rect)
