@@ -4,16 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QCursor
 from PySide6.QtWidgets import (QDockWidget, QFileDialog, QMainWindow,
                                QMessageBox)
 
 from core.board import Board
+from core.auto_placement import auto_place_board
 from io_kicad import board_reader
 from ui.board_canvas import BoardView
 from ui.canvas import DEFAULT_LAYER_COLOR, LAYER_COLORS
 from ui.layers_panel import LayersPanel
-
 
 BOARD_LAYERS: list[tuple[str, str]] = [
     (name, LAYER_COLORS.get(name, DEFAULT_LAYER_COLOR))
@@ -77,6 +77,12 @@ class BoardWindow(QMainWindow):
         m.addAction("Отдалить", self.view.zoom_out)
         m.addAction("Сброс масштаба", self.view.reset_zoom)
 
+        # НОВОЕ МЕНЮ: Инструменты
+        m = self.menuBar().addMenu("Инструменты")
+        self.act_auto_place = QAction("Авторазмещение компонентов…", self)
+        self.act_auto_place.triggered.connect(self.auto_place)
+        m.addAction(self.act_auto_place)
+
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Открыть плату", "",
@@ -109,3 +115,67 @@ class BoardWindow(QMainWindow):
 
     def _on_layers_changed(self):
         self.view.set_visible_layers(self.layers.visible_layers())
+
+    def auto_place(self):
+        if self.board is None:
+            QMessageBox.warning(self, "Авторазмещение", "Сначала откройте плату (.brd файл)")
+            return
+        
+        if len(self.board.modules) == 0:
+            QMessageBox.warning(self, "Авторазмещение", "На плате нет компонентов для размещения")
+            return
+        
+        reply = QMessageBox.question(
+            self, "Авторазмещение компонентов",
+            f"Будет размещено {len(self.board.modules)} компонентов.\n"
+            "Текущие координаты компонентов будут изменены.\n\n"
+            "Продолжить?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        self.setCursor(QCursor(Qt.CursorShape.WaitCursor))
+        
+        try:
+            # ЗАПУСК С БЕЗОПАСНЫМИ ПАРАМЕТРАМИ (шаг 5мм, отступ 15мм)
+            result = auto_place_board(
+                board=self.board,
+                grid_step_mm=5.0,               # Шаг сетки 5 мм
+                anchor="center",                
+                criteria="absolute",            
+                component_priority="max_connections",
+                neighbor_offset_mm=15.0         # Отступ 15 мм для поиска свободного места
+            )
+            
+            self.view.set_board(self.board)
+            self.view.update()
+            
+            self.statusBar().showMessage(
+                f"✓ Авторазмещение выполнено! "
+                f"Время: {result.execution_time_sec:.3f}с  |  "
+                f"Длина связей: {result.total_wire_length_mm:.2f}мм  |  "
+                f"Компонентов: {result.component_count}",
+                10000
+            )
+            
+            QMessageBox.information(
+                self, "Авторазмещение завершено",
+                f"✅ Авторазмещение успешно выполнено!\n\n"
+                f"📊 Результаты:\n"
+                f"  • Время выполнения: {result.execution_time_sec:.4f} сек\n"
+                f"  • Размещено компонентов: {result.component_count}\n"
+                f"  • Итоговая длина связей: {result.total_wire_length_mm:.2f} мм\n\n"
+                f"🔄 Порядок размещения:\n"
+                f"  {', '.join(result.placement_order)}"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка авторазмещения", f"Произошла ошибка:\n{e}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            self.unsetCursor()
