@@ -108,7 +108,15 @@ class Footprint:
     po_x: int = 0
     po_y: int = 0
     po_rotation: int = 0
-    po_layer: int = 15                  # 15 = B.Cu — как в KiCad по умолчанию
+    po_layer: int = 15                  # номер слоя (см. io_kicad/layers.py)
+    # ВАЖНО: нумерация зависит от контекста!
+    #   - В .mod-библиотеке (LAYER_NUM_TO_NAME):       15 = B.Cu, 0 = F.Cu
+    #   - На плате .brd   (BOARD_LAYER_NUM_TO_NAME):   15 = F.Cu, 0 = B.Cu
+    # Дефолт 15 соответствует библиотечному контексту (модуль в редакторе
+    # библиотеки по умолчанию на B.Cu). На плате модули читаются с реальным
+    # значением слоя из Po-строки. Зеркалирование (B.Cu) в auto_placement
+    # и board.module_transform проверяется как `po_layer == 0` — это верно
+    # именно для платной нумерации.
     po_tstamp: str = "00000000"         # Tedit (hex)
     po_flags: str = "00000000"          # Tstamp (обычно всегда нули)
     po_misc: str = "~~"                 # Attributes (2 символа, обычно ~~)
