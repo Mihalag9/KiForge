@@ -70,7 +70,7 @@ class AutoPlacer:
         component_priority: ComponentPriority = "max_connections",
         max_workers: int | None = None,
         neighbor_offset_mm: float = 20.0,
-        padding_mm: float = 3.0,
+        padding_mm: float = 1.5,
         min_center_dist_mm: float = 0.0,
         max_search_expansions: int = 3,
     ):
@@ -100,6 +100,10 @@ class AutoPlacer:
 
         # Кэш размеров — не пересчитываем в цикле
         self._sizes: List[float] = [0.0] * self.n
+        # Кэш локальных bbox: (min_x, min_y, max_x, max_y) после поворота/
+        # зеркалирования, относительно origin. Не меняется во время
+        # размещения → вычисляем один раз.
+        self._local_bbox_cache: List[Tuple[float, float, float, float] | None] = [None] * self.n
 
     # ------------------------------------------------------------------
     # Матрица связности
@@ -213,28 +217,18 @@ class AutoPlacer:
         self, idx: int, x: float, y: float
     ) -> Tuple[float, float, float, float]:
         """BBox компонента idx при позиции (x, y) в абсолютных координатах.
-
-        Учитывает пады, silk-контур (линии, окружности, дуги), поворот и
-        зеркалирование модуля. Добавляет padding со всех сторон.
+        Использует кэшированный локальный bbox → O(1), без трансформации
+        точек при каждом вызове.
         """
-        angle, mirrored = self._module_angle_mirrored(idx)
-        local = self._local_points(idx)
-        if not local:
+        lb = self._local_bbox(idx)
+        if lb is None:
             return x - 5.0, y - 5.0, x + 5.0, y + 5.0
-
-        abs_pts = [
-            (x + tx, y + ty)
-            for tx, ty in (
-                self._transform_point(lx, ly, angle, mirrored) for lx, ly in local
-            )
-        ]
-        xs = [p[0] for p in abs_pts]
-        ys = [p[1] for p in abs_pts]
+        l_min_x, l_min_y, l_max_x, l_max_y = lb
         return (
-            min(xs) - self.padding,
-            min(ys) - self.padding,
-            max(xs) + self.padding,
-            max(ys) + self.padding,
+            x + l_min_x - self.padding,
+            y + l_min_y - self.padding,
+            x + l_max_x + self.padding,
+            y + l_max_y + self.padding,
         )
 
     def _get_component_size(self, idx: int) -> float:
@@ -256,9 +250,13 @@ class AutoPlacer:
         return size
 
     def _check_overlap(self, idx: int, x: float, y: float) -> bool:
-        """Пересекает ли bbox компонента idx в (x, y) любой размещённый."""
+        """Пересекает ли bbox компонента idx в (x, y) любой размещённый.
+        idx исключается из проверки (не проверяем against себя — важно
+        для swap, когда модуль уже в placed_indices)."""
         new_bbox = self._get_component_bbox(idx, x, y)
         for pi in self.placed_indices:
+            if pi == idx:
+                continue
             px, py = self.positions[pi]
             pb = self._get_component_bbox(pi, px, py)
             # AABB-пересечение
@@ -365,27 +363,29 @@ class AutoPlacer:
     def _local_bbox(self, idx: int) -> Tuple[float, float, float, float] | None:
         """Локальный bbox модуля (min_x, min_y, max_x, max_y) после
         поворота и зеркалирования, без padding. Координаты — относительно
-        origin модуля (точки привязки po_x/po_y).
-
-        Важно: origin модуля НЕ совпадает с центром bbox — у DIP-корпусов,
-        например, pads асимметричны относительно origin. Поэтому для
-        отсечения сетки нужно использовать именно min/max локальных точек,
-        а не «половину размера».
+        origin модуля. Кэшируется — не пересчитывается при каждом вызове.
         """
+        cached = self._local_bbox_cache[idx]
+        if cached is not None:
+            return cached
         local = self._local_points(idx)
         if not local:
+            self._local_bbox_cache[idx] = None
             return None
         angle, mirrored = self._module_angle_mirrored(idx)
         tr = [self._transform_point(lx, ly, angle, mirrored) for lx, ly in local]
         xs = [p[0] for p in tr]
         ys = [p[1] for p in tr]
-        return min(xs), min(ys), max(xs), max(ys)
+        result = (min(xs), min(ys), max(xs), max(ys))
+        self._local_bbox_cache[idx] = result
+        return result
 
     def _generate_candidates(
         self,
         chosen_idx: int,
         neighbor_offset: float | None = None,
         check_overlap: bool = True,
+        grid_step: float | None = None,
     ) -> np.ndarray:
         """Сетка позиций вокруг размещённых, отфильтрованная так, чтобы
         компонент chosen_idx в этой позиции не выходил за границы платы.
@@ -395,11 +395,13 @@ class AutoPlacer:
 
         neighbor_offset задаёт радиус расширения области поиска вокруг
         кластера размещённых модулей (по умолчанию self.neighbor_offset).
+        grid_step — шаг сетки (по умолчанию self.grid_step).
         """
         if not self.placed_indices:
             return np.array([])
 
         off = neighbor_offset if neighbor_offset is not None else self.neighbor_offset
+        step = grid_step if grid_step is not None else self.grid_step
         placed_pos = np.array([self.positions[i] for i in self.placed_indices])
 
         min_x, min_y = placed_pos.min(axis=0) - off
@@ -416,11 +418,10 @@ class AutoPlacer:
         max_x = min(max_x, b_max_x - l_max_x - self.padding)
         max_y = min(max_y, b_max_y - l_max_y - self.padding)
 
-        # Генерируем сетку. +1e-9 чтобы включить max, если он на сетке,
-        # но НЕ создавать лишнюю точку за max (как было с +grid_step).
+        # Генерируем сетку. +eps чтобы включить max, если он на сетке.
         eps = 1e-9
-        x_coords = np.arange(min_x, max_x + eps, self.grid_step)
-        y_coords = np.arange(min_y, max_y + eps, self.grid_step)
+        x_coords = np.arange(min_x, max_x + eps, step)
+        y_coords = np.arange(min_y, max_y + eps, step)
         if len(x_coords) == 0 or len(y_coords) == 0:
             return np.array([])
         xx, yy = np.meshgrid(x_coords, y_coords)
@@ -518,6 +519,176 @@ class AutoPlacer:
         return float(np.dot(dists, weights))
 
     # ------------------------------------------------------------------
+    # Шаг 7+: итерационное улучшение (pairwise swap + relocate)
+    # ------------------------------------------------------------------
+    def _wire_contribution(self, idx: int) -> float:
+        """Длина связей модуля idx ко всем остальным (по текущим позициям).
+        Векторизованно через numpy."""
+        if idx < 0 or idx >= self.n:
+            return 0.0
+        c_row = self.C[idx]
+        mask = c_row > 0
+        if not mask.any():
+            return 0.0
+        pos = np.array(self.positions)
+        px, py = pos[idx]
+        dists = np.linalg.norm(pos[mask] - np.array([px, py]), axis=1)
+        return float(np.dot(c_row[mask], dists))
+
+    def _pair_has_overlap(self, i: int, j: int) -> bool:
+        """Проверяет, пересекаются ли модули i и j в их текущих позициях."""
+        bi = self._get_component_bbox(i, *self.positions[i])
+        bj = self._get_component_bbox(j, *self.positions[j])
+        return not (bi[2] <= bj[0] or bi[0] >= bj[2] or
+                    bi[3] <= bj[1] or bi[1] >= bj[3])
+
+    def _any_overlap(self) -> bool:
+        """Есть ли хотя бы одно пересечение среди всех размещённых."""
+        for i in self.placed_indices:
+            for j in self.placed_indices:
+                if j <= i:
+                    continue
+                if self._pair_has_overlap(i, j):
+                    return True
+        return False
+
+    def _in_bounds(self, idx: int, x: float, y: float) -> bool:
+        """Входит ли bbox модуля idx в позиции (x, y) в границы платы."""
+        bbox = self._get_component_bbox(idx, x, y)
+        b_min_x, b_min_y, b_max_x, b_max_y = self._get_board_bounds()
+        eps = 0.01
+        return (bbox[0] >= b_min_x - eps and bbox[1] >= b_min_y - eps and
+                bbox[2] <= b_max_x + eps and bbox[3] <= b_max_y + eps)
+
+    def _try_swap(self, i: int, j: int) -> bool:
+        """Обмен позициями модулей i и j. Оставляем, если:
+        - оба модуля остаются в границах платы
+        - не появляется пересечение
+        - суммарная длина связей уменьшается.
+        """
+        pi, pj = self.positions[i], self.positions[j]
+        # Считаем вклад i+j до обмена
+        old_ij = self._wire_contribution(i) + self._wire_contribution(j)
+        # Обмен
+        self.positions[i], self.positions[j] = pj, pi
+        self.modules[i].po_x, self.modules[i].po_y = pj
+        self.modules[j].po_x, self.modules[j].po_y = pi
+        # Проверка границ (модули разного размера — позиция валидна для одного
+        # может быть невалидна для другого)
+        if not self._in_bounds(i, pj[0], pj[1]) or not self._in_bounds(j, pi[0], pi[1]):
+            self.positions[i], self.positions[j] = pi, pj
+            self.modules[i].po_x, self.modules[i].po_y = pi
+            self.modules[j].po_x, self.modules[j].po_y = pj
+            return False
+        # Проверка пересечений (только i и j — остальные не двигались)
+        if self._check_overlap(i, pj[0], pj[1]) or self._check_overlap(j, pi[0], pi[1]):
+            self.positions[i], self.positions[j] = pi, pj
+            self.modules[i].po_x, self.modules[i].po_y = pi
+            self.modules[j].po_x, self.modules[j].po_y = pj
+            return False
+        new_ij = self._wire_contribution(i) + self._wire_contribution(j)
+        if new_ij < old_ij - 0.01:
+            return True
+        # Откат — нет улучшения
+        self.positions[i], self.positions[j] = pi, pj
+        self.modules[i].po_x, self.modules[i].po_y = pi
+        self.modules[j].po_x, self.modules[j].po_y = pj
+        return False
+
+    def _try_relocate(self, idx: int) -> bool:
+        """Пытаемся переместить модуль idx на лучшую позицию рядом.
+        Возвращает True, если модуль был перемещён с улучшением."""
+        # Временно убираем idx из placed для генерации кандидатов
+        saved_placed = list(self.placed_indices)
+        self.placed_indices = [k for k in self.placed_indices if k != idx]
+        # F к размещённым (без idx) — одинаковая метрика до и после
+        placed_pos = np.array([self.positions[k] for k in self.placed_indices]) if self.placed_indices else None
+        weights = np.array([float(self.C[idx, k]) for k in self.placed_indices]) if self.placed_indices else None
+        if placed_pos is None or len(placed_pos) == 0:
+            self.placed_indices = saved_placed
+            return False
+        old_pos = np.array(self.positions[idx])
+        old_f = float(np.dot(np.linalg.norm(placed_pos - old_pos, axis=1), weights))
+        best_pos = None
+        best_f = old_f
+        for grid_div in [1, 2]:
+            step = self.grid_step / grid_div
+            for attempt in range(2):
+                off = self.neighbor_offset * (1 + attempt)
+                candidates = self._generate_candidates(
+                    idx, neighbor_offset=off, check_overlap=True, grid_step=step
+                )
+                if len(candidates) == 0:
+                    continue
+                diff = candidates[:, np.newaxis, :] - placed_pos[np.newaxis, :, :]
+                dists = np.linalg.norm(diff, axis=2)
+                f_vals = np.dot(dists, weights)
+                min_i = int(np.argmin(f_vals))
+                new_f = float(f_vals[min_i])
+                if new_f < best_f - 0.01:
+                    best_f = new_f
+                    best_pos = (float(candidates[min_i, 0]), float(candidates[min_i, 1]))
+                    break
+            if best_pos is not None:
+                break
+        self.placed_indices = saved_placed
+        if best_pos is not None:
+            self.positions[idx] = best_pos
+            self.modules[idx].po_x, self.modules[idx].po_y = best_pos
+            return True
+        return False
+
+    def _find_any_free_position(self, idx: int) -> Tuple[float, float] | None:
+        """Ищет ЛЮБУЮ позицию на плате, где модуль idx не пересекает
+        размещённые и не выходит за границы. Мелкая сетка, вся плата.
+        Возвращает None, если позиций совсем нет.
+        """
+        lbbox = self._local_bbox(idx)
+        if lbbox is None:
+            return None
+        l_min_x, l_min_y, l_max_x, l_max_y = lbbox
+        b_min_x, b_min_y, b_max_x, b_max_y = self._get_board_bounds()
+        # Границы для origin: чтобы bbox вошёл в плату
+        ox_min = b_min_x - l_min_x + self.padding
+        oy_min = b_min_y - l_min_y + self.padding
+        ox_max = b_max_x - l_max_x - self.padding
+        oy_max = b_max_y - l_max_y - self.padding
+        if ox_max < ox_min or oy_max < oy_min:
+            return None
+        # Мелкая сетка по всей плате
+        step = min(self.grid_step / 4, 2.5)
+        eps = 1e-9
+        for cy in np.arange(oy_min, oy_max + eps, step):
+            for cx in np.arange(ox_min, ox_max + eps, step):
+                if not self._check_overlap(idx, float(cx), float(cy)):
+                    return float(cx), float(cy)
+        return None
+
+    def _iterative_improve(self, max_passes: int = 10) -> int:
+        """Итерационное улучшение: pairwise swap + relocate.
+        Возвращает число улучшений за все проходы."""
+        if self.n < 2:
+            return 0
+        total_improvements = 0
+        for _ in range(max_passes):
+            improved = False
+            # Pairwise swap
+            placed = list(self.placed_indices)
+            for a in range(len(placed)):
+                for b in range(a + 1, len(placed)):
+                    if self._try_swap(placed[a], placed[b]):
+                        improved = True
+                        total_improvements += 1
+            # Relocate
+            for idx in list(self.placed_indices):
+                if self._try_relocate(idx):
+                    improved = True
+                    total_improvements += 1
+            if not improved:
+                break
+        return total_improvements
+
+    # ------------------------------------------------------------------
     # Главный цикл
     # ------------------------------------------------------------------
     def run(self) -> PlacementResult:
@@ -529,7 +700,6 @@ class AutoPlacer:
         self._build_connectivity_matrix()
 
         if self.n == 1:
-            # Один модуль — тоже размещаем как anchor
             self._place_anchor()
             end = time.perf_counter()
             return PlacementResult(
@@ -540,51 +710,124 @@ class AutoPlacer:
                 placement_order=[m.name for m in self.modules],
             )
 
-        # Шаг 1: anchor
+        # === ФАЗА 1: последовательное размещение (Раздел 3.3) ===
+        # Принцип: НИКОГДА не ставим модуль в позицию с пересечением.
+        # Если на базовой сетке нет позиции — измельчаем сетку (×2, ×4).
+        # Если и так нет — модуль переходит в «pending» и ждёт фазу 2.
         self._place_anchor()
+        pending: List[int] = []
 
-        # Шаги 2–8
+        # Фаза 1a: крупные модули первыми (пока плата свободна).
+        # Крупные модули最难 разместить, когда плата заполнена. Ставим их
+        # сразу после anchor, пока есть простор. Позиция всё равно
+        # выбирается по F (минимум длины связей).
+        large_count = max(0, self.n // 4)  # top 25% по размеру
+        if large_count > 0:
+            sizes = [(i, self._get_component_size(i)) for i in self.unplaced_indices]
+            sizes.sort(key=lambda x: x[1], reverse=True)
+            for idx, _ in sizes[:large_count]:
+                if idx not in self.unplaced_indices:
+                    continue
+                best_pos = None
+                for grid_div in [1, 2, 4]:
+                    step = self.grid_step / grid_div
+                    for attempt in range(self.max_search_expansions):
+                        off = self.neighbor_offset * (1 + attempt)
+                        candidates = self._generate_candidates(
+                            idx, neighbor_offset=off,
+                            check_overlap=True, grid_step=step,
+                        )
+                        if len(candidates) > 0:
+                            best_pos = self._find_best_position(idx, candidates)
+                            if best_pos is not None:
+                                break
+                    if best_pos is not None:
+                        break
+                if best_pos is not None:
+                    self._commit_placement(idx, best_pos[0], best_pos[1])
+
+        # Фаза 1b: остальные модули по J-критерию (Раздел 3.3, пункты 3-4)
         while self.unplaced_indices:
-            # Шаги 3–4: выбираем модуль с макс. J (ПЕРВЫМ — до кандидатов)
             j_values = self._calculate_J_all()
             if len(j_values) == 0:
                 break
             best_local = int(np.argmax(j_values))
             chosen_idx = self.unplaced_indices[best_local]
 
-            # Шаги 2, 5, 6: кандидаты для ВЫБРАННОГО модуля → минимум F.
-            # Фаза 1: ищем позицию БЕЗ пересечений, расширяя радиус поиска.
             best_pos: Tuple[float, float] | None = None
-            for attempt in range(self.max_search_expansions):
-                off = self.neighbor_offset * (1 + attempt)
-                candidates = self._generate_candidates(
-                    chosen_idx, neighbor_offset=off, check_overlap=True
-                )
-                if len(candidates) > 0:
-                    best_pos = self._find_best_position(chosen_idx, candidates)
+            # Прогрессивное измельчение сетки: step, step/2, step/4
+            for grid_div in [1, 2, 4]:
+                step = self.grid_step / grid_div
+                for attempt in range(self.max_search_expansions):
+                    off = self.neighbor_offset * (1 + attempt)
+                    candidates = self._generate_candidates(
+                        chosen_idx, neighbor_offset=off,
+                        check_overlap=True, grid_step=step,
+                    )
+                    if len(candidates) > 0:
+                        best_pos = self._find_best_position(chosen_idx, candidates)
+                        if best_pos is not None:
+                            break
+                if best_pos is not None:
+                    break
+
+            if best_pos is not None:
+                self._commit_placement(chosen_idx, best_pos[0], best_pos[1])
+            else:
+                # НЕ размещаем с пересечением — в pending
+                pending.append(chosen_idx)
+                self.unplaced_indices.remove(chosen_idx)
+
+        # === ФАЗА 2: итерационное улучшение + размещение pending ===
+        if pending:
+            # Лёгкая итерационная оптимизация для освобождения места
+            self._iterative_improve(max_passes=1)
+            # Пробуем pending с измельчённой сеткой
+            still_pending = []
+            for idx in pending:
+                best_pos = None
+                for grid_div in [4, 8]:
+                    step = self.grid_step / grid_div
+                    for attempt in range(self.max_search_expansions):
+                        off = self.neighbor_offset * (2 + attempt)
+                        candidates = self._generate_candidates(
+                            idx, neighbor_offset=off,
+                            check_overlap=True, grid_step=step,
+                        )
+                        if len(candidates) > 0:
+                            best_pos = self._find_best_position(idx, candidates)
+                            if best_pos is not None:
+                                break
                     if best_pos is not None:
                         break
+                if best_pos is not None:
+                    self._commit_placement(idx, best_pos[0], best_pos[1])
+                else:
+                    still_pending.append(idx)
+            pending = still_pending
 
-            # Фаза 2: best-effort — позиции без проверки пересечений.
-            # Модуль всё равно нужно разместить (не оставлять в исходной
-            # позиции, которая может конфликтовать). Выбираем минимум F
-            # по всем позициям в пределах платы.
-            if best_pos is None:
-                off = self.neighbor_offset * self.max_search_expansions
-                candidates = self._generate_candidates(
-                    chosen_idx, neighbor_offset=off, check_overlap=False
-                )
-                if len(candidates) > 0:
-                    best_pos = self._find_best_position(chosen_idx, candidates)
+        # Финальная итерационная оптимизация (1 проход — достаточно,
+        # основной выигрыш даёт relocate, а не swap)
+        self._iterative_improve(max_passes=1)
 
-            if best_pos is None:
-                # Модуль не помещается в плату вообще — фиксируем неудачу.
-                self.failed_to_place.append(self.modules[chosen_idx].name)
-                self.unplaced_indices.remove(chosen_idx)
-                continue
+        # === ФАЗА 3: принудительное размещение остатков ===
+        # Pending-модули, которым не нашлось позиции рядом со связями,
+        # всё равно нужно разместить (не оставлять в исходной позиции,
+        # которая может пересекать размещённые). Ищем ЛЮБУЮ свободную
+        # позицию на всей плате с мелкой сеткой.
+        if pending:
+            still_pending = []
+            for idx in pending:
+                best_pos = self._find_any_free_position(idx)
+                if best_pos is not None:
+                    self._commit_placement(idx, best_pos[0], best_pos[1])
+                else:
+                    still_pending.append(idx)
+            pending = still_pending
 
-            # Шаг 7
-            self._commit_placement(chosen_idx, best_pos[0], best_pos[1])
+        # Truly failed — не помещаются в плату вообще
+        for idx in pending:
+            self.failed_to_place.append(self.modules[idx].name)
 
         end = time.perf_counter()
         wire = self._calculate_total_wire_length()
@@ -606,8 +849,8 @@ def auto_place_board(
     component_priority: ComponentPriority = "max_connections",
     max_workers: int | None = None,
     neighbor_offset_mm: float = 20.0,
-    padding_mm: float = 3.0,
-    min_center_dist_mm: float = 15.0,
+    padding_mm: float = 1.5,
+    min_center_dist_mm: float = 0.0,
 ) -> PlacementResult:
     """Удобная обёртка над AutoPlacer.run()."""
     placer = AutoPlacer(
