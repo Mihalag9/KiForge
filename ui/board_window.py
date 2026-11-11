@@ -163,12 +163,12 @@ class BoardWindow(QMainWindow):
             
             QMessageBox.information(
                 self, "Авторазмещение завершено",
-                f"✅ Авторазмещение успешно выполнено!\n\n"
-                f"📊 Результаты:\n"
+                f"Авторазмещение успешно выполнено!\n\n"
+                f"Результаты:\n"
                 f"  • Время выполнения: {result.execution_time_sec:.4f} сек\n"
                 f"  • Размещено компонентов: {result.component_count}\n"
                 f"  • Итоговая длина связей: {result.total_wire_length_mm:.2f} мм\n\n"
-                f"🔄 Порядок размещения:\n"
+                f"Порядок размещения:\n"
                 f"  {', '.join(result.placement_order)}"
             )
             
