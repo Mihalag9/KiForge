@@ -34,7 +34,9 @@ BOARD_LAYERS: list[tuple[str, str]] = [
     )
 ]
 
-BOARD_DEFAULT_VISIBLE = {"F.Cu", "B.Cu", "F.SilkS", "B.SilkS", "Edge.Cuts"}
+BOARD_DEFAULT_VISIBLE = {
+    "F.Cu", "B.Cu", "F.SilkS", "B.SilkS", "Edge.Cuts"
+}
 
 
 class BoardWindow(QMainWindow):
@@ -50,9 +52,12 @@ class BoardWindow(QMainWindow):
         self.setCentralWidget(self.view)
 
         self.layers = LayersPanel(
-            self, layers=BOARD_LAYERS, default_visible=BOARD_DEFAULT_VISIBLE
+            self,
+            layers=BOARD_LAYERS,
+            default_visible=BOARD_DEFAULT_VISIBLE,
         )
         self.layers.visibility_changed.connect(self._on_layers_changed)
+
         self.dock_layers = QDockWidget("Слои", self)
         self.dock_layers.setWidget(self.layers)
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_layers)
@@ -92,7 +97,9 @@ class BoardWindow(QMainWindow):
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Открыть плату", "",
+            self,
+            "Открыть плату",
+            "",
             "Платы KiCad (*.brd);;Все файлы (*)",
         )
         if path:
@@ -100,10 +107,17 @@ class BoardWindow(QMainWindow):
 
     def load_file(self, path: Path) -> bool:
         try:
-            text = Path(path).read_text(encoding="utf-8", errors="replace")
+            text = Path(path).read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
             board = board_reader.read(text)
         except Exception as error:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать плату:\n{error}")
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                f"Не удалось прочитать плату:\n{error}",
+            )
             return False
 
         self.board = board
@@ -112,11 +126,13 @@ class BoardWindow(QMainWindow):
         self.view.set_board(board)
         self.view.set_visible_layers(self.layers.visible_layers())
 
-        pads = sum(len(module.pads) for module in board.modules)
-        nets = len([net for net in board.nets if net > 0])
+        pad_count = sum(len(module.pads) for module in board.modules)
+        net_count = len([net for net in board.nets if net > 0])
         self.statusBar().showMessage(
-            f"Модули: {len(board.modules)}  |  Пады: {pads}  |  "
-            f"Дорожки: {len(board.tracks)}  |  Цепи: {nets}"
+            f"Модули: {len(board.modules)}  |  "
+            f"Пады: {pad_count}  |  "
+            f"Дорожки: {len(board.tracks)}  |  "
+            f"Цепи: {net_count}"
         )
         return True
 
@@ -126,27 +142,34 @@ class BoardWindow(QMainWindow):
     def auto_place(self):
         if self.board is None:
             QMessageBox.warning(
-                self, "Авторазмещение", "Сначала откройте плату (.brd файл)."
+                self,
+                "Авторазмещение",
+                "Сначала откройте плату (.brd файл).",
             )
             return
+
         if not self.board.modules:
             QMessageBox.warning(
-                self, "Авторазмещение", "На плате нет компонентов для размещения."
+                self,
+                "Авторазмещение",
+                "На плате нет компонентов для размещения.",
             )
             return
 
         dialog = AutoPlacementSettingsDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+
         settings = dialog.settings()
 
         confirmation = QMessageBox.question(
             self,
             "Авторазмещение компонентов",
-            f"Будет размещено {len(self.board.modules)} компонентов.\n"
-            "Текущие координаты компонентов будут изменены.\n\n"
+            f"Будет размещено {len(self.board.modules)} корпусов.\n"
+            "Текущие координаты корпусов будут изменены.\n\n"
             f"Критерий выбора: {dialog.criteria_combo.currentText()}\n"
-            f"Потоков для расчёта: {settings['max_workers']}\n\n"
+            f"Метрика d: {dialog.distance_combo.currentText()}\n"
+            f"Количество потоков: {settings['max_workers']}\n\n"
             "Продолжить?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -158,22 +181,48 @@ class BoardWindow(QMainWindow):
         try:
             result = auto_place_board(
                 board=self.board,
-                grid_step_mm=5.0,
                 neighbor_offset_mm=15.0,
                 **settings,
             )
+
             self.view.set_board(self.board)
             self.view.update()
 
-            length_label = (
-                "Взвешенная оценка длины связей (между корпусами): "
-                f"{result.total_weighted_connection_length_mm:.2f} мм"
+            initial_label = (
+                "Исходная оценка: "
+                f"{result.initial_weighted_connection_length_mm:.2f} мм"
             )
+            placement_label = (
+                "После последовательного размещения: "
+                f"{result.after_placement_weighted_connection_length_mm:.2f} мм"
+            )
+            local_label = (
+                "После локальной оптимизации: "
+                f"{result.after_local_optimization_weighted_connection_length_mm:.2f} мм"
+            )
+            placement_gain = (
+                f"Изменение после размещения: "
+                f"{result.placement_reduction_mm:+.2f} мм "
+                f"({result.placement_improvement_percent:+.2f} %)"
+            )
+            local_gain = (
+                f"Изменение после ЛО: "
+                f"{result.local_optimization_reduction_mm:+.2f} мм "
+                f"({result.local_optimization_improvement_percent:+.2f} %)"
+            )
+
+            metric_name = (
+                "Манхэттенская"
+                if settings["distance_metric"] == "manhattan"
+                else "Евклидова"
+            )
+
             self.statusBar().showMessage(
                 "Авторазмещение выполнено! "
-                f"Время: {result.execution_time_sec:.3f}с  |  "
-                f"Связей между корпусами: {result.connection_count}  |  "
-                f"{length_label}  |  "
+                f"Время: {result.execution_time_sec:.3f} с  |  "
+                f"Связей: {result.connection_count}  |  "
+                f"После ЛО: "
+                f"{result.after_local_optimization_weighted_connection_length_mm:.2f} мм  |  "
                 f"Размещено: {result.placed_count}/{result.component_count}",
                 10000,
             )
@@ -182,21 +231,41 @@ class BoardWindow(QMainWindow):
                 "Авторазмещение завершено.\n\n"
                 f"Время выполнения: {result.execution_time_sec:.4f} сек\n"
                 f"Корпусов размещено: {result.placed_count} из {result.component_count}\n"
-                f"Связей между корпусами: {result.connection_count}\n"
-                f"{length_label}\n"
-                f"Использовано потоков (максимум): {settings['max_workers']}\n\n"
+                f"Связей между корпусами: {result.connection_count}\n\n"
+                "Взвешенная оценка расстояний между корпусами "
+                "(не физическая длина медных дорожек):\n"
+                f"  {initial_label}\n"
+                f"  {placement_label}\n"
+                f"  {local_label}\n"
+                f"  {placement_gain}\n"
+                f"  {local_gain}\n\n"
+                f"Метрика d: {metric_name}\n"
+                f"A — отступ от контура: {settings['board_margin_mm']:.2f} мм\n"
+                f"B — минимальный зазор: {settings['min_clearance_mm']:.2f} мм\n"
+                f"C — шаг сетки: {settings['grid_step_mm']:.3f} мм\n"
+                f"Лимит кандидатных позиций: {settings['max_grid_positions']}\n"
+                f"Максимальное количество потоков: {settings['max_workers']}\n\n"
                 "Порядок размещения:\n"
                 + ", ".join(result.placement_order)
             )
+
             if result.failed_to_place:
                 details += (
                     "\n\nНе удалось разместить без пересечений:\n"
                     + ", ".join(result.failed_to_place)
                 )
-            QMessageBox.information(self, "Авторазмещение завершено", details)
+
+            QMessageBox.information(
+                self,
+                "Авторазмещение завершено",
+                details,
+            )
+
         except Exception as error:
             QMessageBox.critical(
-                self, "Ошибка авторазмещения", f"Произошла ошибка:\n{error}"
+                self,
+                "Ошибка авторазмещения",
+                f"Произошла ошибка:\n{error}",
             )
             traceback.print_exc()
         finally:
