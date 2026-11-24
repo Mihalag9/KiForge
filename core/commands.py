@@ -95,6 +95,33 @@ class MoveManyCommand(Command):
                 setattr(obj, k, v)
 
 
+class MoveModulesCommand(Command):
+    """Перемещение нескольких корпусов платы одной командой.
+
+    В отличие от MoveManyCommand старые и новые координаты задаются
+    явно. Это нужно авторазмещению: алгоритм применяет координаты до
+    постановки команды в стек, поэтому старые значения нельзя снять
+    через getattr в момент создания команды.
+    """
+
+    def __init__(self, moves):
+        """moves — последовательность троек (footprint, old_xy, new_xy)."""
+        self._moves = [
+            (fp, (float(ox), float(oy)), (float(nx), float(ny)))
+            for fp, (ox, oy), (nx, ny) in moves
+        ]
+
+    def do(self):
+        for fp, _, (nx, ny) in self._moves:
+            fp.po_x = nx
+            fp.po_y = ny
+
+    def undo(self):
+        for fp, (ox, oy), _ in self._moves:
+            fp.po_x = ox
+            fp.po_y = oy
+
+
 class SetOriginCommand(Command):
     def __init__(self, fp: Footprint, dx: float, dy: float):
         self.fp = fp; self.dx = dx; self.dy = dy

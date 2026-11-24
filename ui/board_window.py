@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from core.board import Board
 from core.auto_placement import auto_place_board
+from core.commands import CommandStack, MoveModulesCommand
 from io_kicad import board_reader
 from ui.auto_placement_dialog import AutoPlacementSettingsDialog
 from ui.board_canvas import BoardView
@@ -63,7 +64,11 @@ class BoardWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, self.dock_layers)
         self.view.set_visible_layers(self.layers.visible_layers())
 
+        self._commands = CommandStack()
+
         self._build_menu()
+        self._commands.on_change = self._update_undo_actions
+
         self.statusBar().showMessage("Плата не открыта")
 
     def _build_menu(self):
@@ -71,6 +76,19 @@ class BoardWindow(QMainWindow):
         menu.addAction("Открыть плату…", self.open_file)
         menu.addSeparator()
         menu.addAction("Закрыть", self.close)
+
+        menu = self.menuBar().addMenu("Правка")
+        self.act_undo = QAction("Отменить авторазмещение", self)
+        self.act_undo.setShortcuts(["Ctrl+Z"])
+        self.act_undo.setEnabled(False)
+        self.act_undo.triggered.connect(self.undo)
+        menu.addAction(self.act_undo)
+
+        self.act_redo = QAction("Повторить авторазмещение", self)
+        self.act_redo.setShortcuts(["Ctrl+Y", "Ctrl+Shift+Z"])
+        self.act_redo.setEnabled(False)
+        self.act_redo.triggered.connect(self.redo)
+        menu.addAction(self.act_redo)
 
         menu = self.menuBar().addMenu("Вид")
         self.act_ratsnest = QAction("Связи", self)
@@ -122,6 +140,7 @@ class BoardWindow(QMainWindow):
 
         self.board = board
         self.current_path = Path(path)
+        self._commands.clear()
         self.setWindowTitle(f"KiForge — плата: {Path(path).name}")
         self.view.set_board(board)
         self.view.set_visible_layers(self.layers.visible_layers())
@@ -169,6 +188,7 @@ class BoardWindow(QMainWindow):
             "Текущие координаты корпусов будут изменены.\n\n"
             f"Критерий выбора: {dialog.criteria_combo.currentText()}\n"
             f"Метрика d: {dialog.distance_combo.currentText()}\n"
+            f"Параметр связности λ: {settings['chain_lambda']}\n"
             f"Количество потоков: {settings['max_workers']}\n\n"
             "Продолжить?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -177,6 +197,9 @@ class BoardWindow(QMainWindow):
         if confirmation != QMessageBox.StandardButton.Yes:
             return
 
+        modules = list(self.board.modules)
+        old_positions = [(float(fp.po_x), float(fp.po_y)) for fp in modules]
+
         self.setCursor(QCursor(Qt.CursorShape.WaitCursor))
         try:
             result = auto_place_board(
@@ -184,6 +207,19 @@ class BoardWindow(QMainWindow):
                 neighbor_offset_mm=15.0,
                 **settings,
             )
+
+            # Результат авторазмещения — одна команда редактора: можно
+            # отменить (Ctrl+Z) и повторить (Ctrl+Y).
+            new_positions = [
+                (float(fp.po_x), float(fp.po_y)) for fp in modules
+            ]
+            moves = [
+                (fp, old, new)
+                for fp, old, new in zip(modules, old_positions, new_positions)
+                if new != old
+            ]
+            if moves:
+                self._commands.push(MoveModulesCommand(moves))
 
             self.view.set_board(self.board)
             self.view.update()
@@ -231,7 +267,8 @@ class BoardWindow(QMainWindow):
                 "Авторазмещение завершено.\n\n"
                 f"Время выполнения: {result.execution_time_sec:.4f} сек\n"
                 f"Корпусов размещено: {result.placed_count} из {result.component_count}\n"
-                f"Связей между корпусами: {result.connection_count}\n\n"
+                f"Связей между корпусами: {result.connection_count}\n"
+                f"Фиксированный корпус (якорь): {result.anchor_name or '—'}\n\n"
                 "Взвешенная оценка расстояний между корпусами "
                 "(не физическая длина медных дорожек):\n"
                 f"  {initial_label}\n"
@@ -240,6 +277,7 @@ class BoardWindow(QMainWindow):
                 f"  {placement_gain}\n"
                 f"  {local_gain}\n\n"
                 f"Метрика d: {metric_name}\n"
+                f"Параметр связности λ: {settings['chain_lambda']}\n"
                 f"A — отступ от контура: {settings['board_margin_mm']:.2f} мм\n"
                 f"B — минимальный зазор: {settings['min_clearance_mm']:.2f} мм\n"
                 f"C — шаг сетки: {settings['grid_step_mm']:.3f} мм\n"
@@ -270,3 +308,27 @@ class BoardWindow(QMainWindow):
             traceback.print_exc()
         finally:
             self.unsetCursor()
+
+    def undo(self):
+        """Отменить последнее авторазмещение."""
+        if self.board is None:
+            return
+        if self._commands.undo():
+            self.view.refresh_board()
+            self.statusBar().showMessage(
+                "Отменено: авторазмещение компонентов", 5000
+            )
+
+    def redo(self):
+        """Повторить отменённое авторазмещение."""
+        if self.board is None:
+            return
+        if self._commands.redo():
+            self.view.refresh_board()
+            self.statusBar().showMessage(
+                "Повторено: авторазмещение компонентов", 5000
+            )
+
+    def _update_undo_actions(self):
+        self.act_undo.setEnabled(self._commands.can_undo())
+        self.act_redo.setEnabled(self._commands.can_redo())

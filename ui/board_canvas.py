@@ -413,6 +413,17 @@ class BoardView(QGraphicsView):
         self._compute_content_rect()
         self.fit_to_content()
 
+    def refresh_board(self):
+        """Пересчитать ratsnest и перерисовать сцену без сброса масштаба.
+
+        Используется после undo/redo авторазмещения: все объекты платы
+        рисуются на лету по модели, поэтому достаточно обновить связи
+        (ratsnest считается по координатам падов) и перерисовать сцену.
+        """
+        if self._scene.board is not None:
+            self._scene.ratsnest = ratsnest_segments(self._scene.board)
+        self._scene.update()
+
     def set_visible_layers(self, layers):
         self._scene.visible_layers = set(layers)
         self._scene.update()

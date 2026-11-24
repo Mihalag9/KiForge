@@ -73,6 +73,17 @@ class AutoPlacementSettingsDialog(QDialog):
         self.criteria_combo.setCurrentIndex(3)
         form.addRow("Критерий выбора следующего корпуса:", self.criteria_combo)
 
+        self.lambda_spin = QSpinBox()
+        self.lambda_spin.setRange(-1, 100)
+        self.lambda_spin.setValue(0)
+        self.lambda_spin.setToolTip(
+            "λ — параметр связности в формуле (3.3.2). Вклад цепи: "
+            "((ρ + λ) / ρ) · ωₛ. λ = 0 — базовый вариант; положительные "
+            "значения усиливают вес цепей, соединяющих мало корпусов, "
+            "λ = −1 слегка ослабляет вклад всех цепей."
+        )
+        form.addRow("λ — параметр связности (3.3.2):", self.lambda_spin)
+
         self.distance_combo = QComboBox()
         self.distance_combo.addItem("Евклидова", "euclidean")
         self.distance_combo.addItem("Манхэттенская", "manhattan")
@@ -122,23 +133,24 @@ class AutoPlacementSettingsDialog(QDialog):
         form.addRow("Лимит кандидатных позиций:", self.max_grid_spin)
 
         self.workers_spin = QSpinBox()
-        self.workers_spin.setRange(1, 10)
+        self.workers_spin.setRange(1, max(1, os.cpu_count() or 1))
         self.workers_spin.setSingleStep(1)
         self.workers_spin.setValue(min(4, max(1, os.cpu_count() or 1)))
         self.workers_spin.setToolTip(
             "Потоки могут использоваться при расчёте J, фильтрации Rₖ "
-            "и оценке F. Для маленьких наборов часть расчётов выполняется "
+            "и оценке F. Максимальное количество равно числу логических "
+            "ядер ЭВМ. Для маленьких наборов часть расчётов выполняется "
             "последовательно, чтобы избежать накладных расходов."
         )
-        form.addRow("Количество потоков (1–10):", self.workers_spin)
+        form.addRow("Количество потоков:", self.workers_spin)
 
         criterion_help = QLabel(
             "Веса цепей рассчитываются автоматически: ωₛ = Pₛ / Pср, "
             "где Pₛ — количество контактных площадок цепи, Pср — среднее "
-            "количество площадок по непустым цепям. В формуле (3.3.2) "
-            "используется λ = 0. Длина связей в результатах является "
-            "взвешенной оценкой расстояний между корпусами, а не длиной "
-            "медных дорожек."
+            "количество площадок по непустым цепям. Параметр связности λ "
+            "входит в формулу (3.3.2) и по умолчанию равен 0. Длина связей "
+            "в результатах является взвешенной оценкой расстояний между "
+            "корпусами, а не длиной медных дорожек."
         )
         criterion_help.setWordWrap(True)
         criterion_help.setStyleSheet("color: #8A93A8;")
@@ -164,6 +176,7 @@ class AutoPlacementSettingsDialog(QDialog):
             "component_priority": self.priority_combo.currentData(),
             "anchor": self.anchor_combo.currentData(),
             "criteria": self.criteria_combo.currentData(),
+            "chain_lambda": self.lambda_spin.value(),
             "distance_metric": self.distance_combo.currentData(),
             "board_margin_mm": self.margin_spin.value(),
             "min_clearance_mm": self.clearance_spin.value(),

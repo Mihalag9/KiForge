@@ -47,6 +47,7 @@ class PlacementResult:
     connection_count: int
     total_weighted_connection_length_mm: float
     placement_order: list[str]
+    anchor_name: str = ""
     failed_to_place: list[str] = field(default_factory=list)
     initial_weighted_connection_length_mm: float = 0.0
     after_placement_weighted_connection_length_mm: float = 0.0
@@ -131,8 +132,12 @@ class AutoPlacer:
             )
         if max_workers is None:
             max_workers = min(4, max(1, os.cpu_count() or 1))
-        if not 1 <= int(max_workers) <= 10:
-            raise ValueError("max_workers должен быть в диапазоне от 1 до 10")
+        cpu_limit = max(1, os.cpu_count() or 1)
+        if not 1 <= int(max_workers) <= cpu_limit:
+            raise ValueError(
+                "max_workers должен быть в диапазоне от 1 до "
+                f"{cpu_limit} (число логических ядер машины)"
+            )
         if int(chain_lambda) < -1:
             raise ValueError("chain_lambda должен быть не меньше -1")
         if not math.isfinite(float(board_margin_mm)) or board_margin_mm < 0:
@@ -1182,6 +1187,10 @@ class AutoPlacer:
         initial_length = self._calculate_total_weighted_connection_length()
         self._place_anchor()
 
+        anchor_name = ""
+        if self.anchor_index is not None:
+            anchor_name = self.modules[self.anchor_index].name
+
         if self.n == 1:
             elapsed = time.perf_counter() - started
             return PlacementResult(
@@ -1191,6 +1200,7 @@ class AutoPlacer:
                 connection_count=0,
                 total_weighted_connection_length_mm=0.0,
                 placement_order=list(self.placement_order),
+                anchor_name=anchor_name,
                 initial_weighted_connection_length_mm=initial_length,
                 after_placement_weighted_connection_length_mm=0.0,
             )
@@ -1290,6 +1300,7 @@ class AutoPlacer:
             connection_count=self._calculate_connection_count(),
             total_weighted_connection_length_mm=after_local_optimization_length,
             placement_order=list(self.placement_order),
+            anchor_name=anchor_name,
             failed_to_place=list(self.failed_to_place),
             initial_weighted_connection_length_mm=initial_length,
             after_placement_weighted_connection_length_mm=after_placement_length,
