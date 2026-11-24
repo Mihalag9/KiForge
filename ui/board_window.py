@@ -165,10 +165,15 @@ class BoardWindow(QMainWindow):
             self.view.set_board(self.board)
             self.view.update()
 
+            length_label = (
+                "Взвешенная оценка длины связей (между корпусами): "
+                f"{result.total_weighted_connection_length_mm:.2f} мм"
+            )
             self.statusBar().showMessage(
                 "Авторазмещение выполнено! "
                 f"Время: {result.execution_time_sec:.3f}с  |  "
-                f"Длина связей: {result.total_wire_length_mm:.2f}мм  |  "
+                f"Связей между корпусами: {result.connection_count}  |  "
+                f"{length_label}  |  "
                 f"Размещено: {result.placed_count}/{result.component_count}",
                 10000,
             )
@@ -176,8 +181,9 @@ class BoardWindow(QMainWindow):
             details = (
                 "Авторазмещение завершено.\n\n"
                 f"Время выполнения: {result.execution_time_sec:.4f} сек\n"
-                f"Размещено компонентов: {result.placed_count} из {result.component_count}\n"
-                f"Итоговая длина связей: {result.total_wire_length_mm:.2f} мм\n"
+                f"Корпусов размещено: {result.placed_count} из {result.component_count}\n"
+                f"Связей между корпусами: {result.connection_count}\n"
+                f"{length_label}\n"
                 f"Использовано потоков (максимум): {settings['max_workers']}\n\n"
                 "Порядок размещения:\n"
                 + ", ".join(result.placement_order)

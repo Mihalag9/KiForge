@@ -28,9 +28,19 @@ class PlacementResult:
     execution_time_sec: float
     component_count: int
     placed_count: int
-    total_wire_length_mm: float
+    connection_count: int
+    total_weighted_connection_length_mm: float
     placement_order: list[str]
     failed_to_place: list[str] = field(default_factory=list)
+
+    @property
+    def total_wire_length_mm(self) -> float:
+        """Устаревший псевдоним для обратной совместимости.
+
+        Значение не является длиной проложенных медных дорожек. Это
+        взвешенная оценка расстояний между корпусами, соединёнными цепями.
+        """
+        return self.total_weighted_connection_length_mm
 
 
 class AutoPlacer:
@@ -182,10 +192,13 @@ class AutoPlacer:
         return fp.po_rotation / 10.0, fp.po_layer == 0
 
     def _local_points(self, idx: int) -> list[tuple[float, float]]:
+        """Точки графики корпуса в локальных координатах.
+
+        Пады обрабатываются отдельно в _local_bbox: для них необходимо
+        учитывать не только центр, но и реальные габариты/ориентацию.
+        """
         fp = self.modules[idx]
         points: list[tuple[float, float]] = []
-        for pad in fp.pads:
-            points.append((pad.x, pad.y))
         for line in fp.lines:
             points.extend(((line.x1, line.y1), (line.x2, line.y2)))
         for circle in fp.circles:
@@ -202,18 +215,71 @@ class AutoPlacer:
             ))
         return points
 
+    @staticmethod
+    def _pad_half_extents(pad) -> tuple[float, float]:
+        """Полуразмеры ограничивающего прямоугольника пада в координатах платы.
+
+        Для кругового пада используется фактический диаметр min(width, height),
+        для прямоугольного/овального/трапециевидного — внешние размеры width
+        и height. pad_angle в legacy .brd хранится в десятых долях градуса и,
+        согласно логике отрисовки BoardCanvas, является абсолютным углом на плате.
+        Обводка тоже включается в bbox небольшим запасом.
+        """
+        width = max(abs(float(pad.width)), 0.01)
+        height = max(abs(float(pad.height)), 0.01)
+        shape = str(pad.shape).upper()
+
+        if shape == "C":
+            radius = min(width, height) / 2.0
+            stroke_half = max(min(width, height) * 0.05, 0.02) / 2.0
+            return radius + stroke_half, radius + stroke_half
+
+        angle = math.radians(float(pad.pad_angle) / 10.0)
+        cos_a = abs(math.cos(angle))
+        sin_a = abs(math.sin(angle))
+        half_x = (cos_a * width + sin_a * height) / 2.0
+        half_y = (sin_a * width + cos_a * height) / 2.0
+
+        # Соответствует минимальной толщине обводки PadItem/BoardCanvas.
+        stroke_half = max(min(width, height) * 0.05, 0.02) / 2.0
+        return half_x + stroke_half, half_y + stroke_half
+
     def _local_bbox(self, idx: int) -> tuple[float, float, float, float] | None:
+        """BBox корпуса относительно origin после поворота/зеркалирования.
+
+        Для каждого пада учитываются его реальные width/height, форма и
+        абсолютный pad_angle. Центр пада проходит через трансформацию корпуса,
+        а прямоугольник самого пада ограничивается уже в координатах платы.
+        Это соответствует BoardCanvas, где ориентация пада компенсирует
+        поворот корпуса и остаётся абсолютной относительно платы.
+        """
         if self._bbox_computed[idx]:
             return self._local_bbox_cache[idx]
-        local = self._local_points(idx)
-        if not local:
+
+        fp = self.modules[idx]
+        module_angle, mirrored = self._module_angle_mirrored(idx)
+        transformed = [
+            self._transform_point(x, y, module_angle, mirrored)
+            for x, y in self._local_points(idx)
+        ]
+
+        for pad in fp.pads:
+            center_x, center_y = self._transform_point(
+                float(pad.x), float(pad.y), module_angle, mirrored
+            )
+            half_x, half_y = self._pad_half_extents(pad)
+            transformed.extend((
+                (center_x - half_x, center_y - half_y),
+                (center_x + half_x, center_y + half_y),
+            ))
+
+        if not transformed:
             self._bbox_computed[idx] = True
             self._local_bbox_cache[idx] = None
             return None
-        angle, mirrored = self._module_angle_mirrored(idx)
-        transformed = [self._transform_point(x, y, angle, mirrored) for x, y in local]
-        xs = [p[0] for p in transformed]
-        ys = [p[1] for p in transformed]
+
+        xs = [point[0] for point in transformed]
+        ys = [point[1] for point in transformed]
         bbox = (min(xs), min(ys), max(xs), max(ys))
         self._bbox_computed[idx] = True
         self._local_bbox_cache[idx] = bbox
@@ -434,7 +500,22 @@ class AutoPlacer:
         if self.modules[idx].name not in self.placement_order:
             self.placement_order.append(self.modules[idx].name)
 
-    def _calculate_total_wire_length(self) -> float:
+    def _calculate_connection_count(self) -> int:
+        """Количество пар корпусов с хотя бы одной общей электрической цепью.
+
+        Каждая пара учитывается один раз независимо от количества общих цепей.
+        Одна цепь может создавать связи между несколькими парами корпусов.
+        """
+        if self.n < 2:
+            return 0
+        return int(np.count_nonzero(np.triu(self.C > 0.0, k=1)))
+
+    def _calculate_total_weighted_connection_length(self) -> float:
+        """Взвешенная сумма расстояний между корпусами, связанными цепями.
+
+        Это метрика алгоритма размещения, а не длина физических медных дорожек.
+        Для каждой пары используется r_ij * d_ij; пары без общей цепи пропускаются.
+        """
         if self.n == 0:
             return 0.0
         rows, cols = np.where(np.triu(self.C, k=1) > 0)
@@ -443,6 +524,14 @@ class AutoPlacer:
         positions = np.asarray(self.positions)
         distances = np.linalg.norm(positions[rows] - positions[cols], axis=1)
         return float(np.dot(distances, self.C[rows, cols]))
+
+    def _calculate_total_wire_length(self) -> float:
+        """Совместимый псевдоним старого имени метрики.
+
+        Устаревшее имя оставлено, чтобы не ломать возможные внешние вызовы.
+        Значение — взвешенная оценка длины связей, не длина дорожек.
+        """
+        return self._calculate_total_weighted_connection_length()
 
     def _wire_contribution(self, idx: int) -> float:
         row = self.C[idx]
@@ -577,14 +666,14 @@ class AutoPlacer:
     def run(self) -> PlacementResult:
         started = time.perf_counter()
         if self.n == 0:
-            return PlacementResult(0.0, 0, 0, 0.0, [], [])
+            return PlacementResult(0.0, 0, 0, 0, 0.0, [], [])
 
         self._build_connectivity_matrix()
         self._place_anchor()
         if self.n == 1:
             elapsed = time.perf_counter() - started
             return PlacementResult(
-                elapsed, 1, 1, 0.0, list(self.placement_order), []
+                elapsed, 1, 1, 0, 0.0, list(self.placement_order), []
             )
 
         # ВАЖНО: все компоненты после anchor выбираются по одному
@@ -669,7 +758,10 @@ class AutoPlacer:
             execution_time_sec=elapsed,
             component_count=self.n,
             placed_count=len(self.placed_indices),
-            total_wire_length_mm=self._calculate_total_wire_length(),
+            connection_count=self._calculate_connection_count(),
+            total_weighted_connection_length_mm=(
+                self._calculate_total_weighted_connection_length()
+            ),
             placement_order=list(self.placement_order),
             failed_to_place=list(self.failed_to_place),
         )
