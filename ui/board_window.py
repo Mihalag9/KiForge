@@ -225,16 +225,16 @@ class BoardWindow(QMainWindow):
             self.view.update()
 
             initial_label = (
-                "Исходная оценка: "
-                f"{result.initial_weighted_connection_length_mm:.2f} мм"
+                "Исходная длина связей: "
+                f"{result.initial_connection_length_mm:.2f} мм"
             )
             placement_label = (
                 "После последовательного размещения: "
-                f"{result.after_placement_weighted_connection_length_mm:.2f} мм"
+                f"{result.after_placement_connection_length_mm:.2f} мм"
             )
             local_label = (
                 "После локальной оптимизации: "
-                f"{result.after_local_optimization_weighted_connection_length_mm:.2f} мм"
+                f"{result.after_local_optimization_connection_length_mm:.2f} мм"
             )
             placement_gain = (
                 f"Изменение после размещения: "
@@ -258,7 +258,7 @@ class BoardWindow(QMainWindow):
                 f"Время: {result.execution_time_sec:.3f} с  |  "
                 f"Связей: {result.connection_count}  |  "
                 f"После ЛО: "
-                f"{result.after_local_optimization_weighted_connection_length_mm:.2f} мм  |  "
+                f"{result.after_local_optimization_connection_length_mm:.2f} мм  |  "
                 f"Размещено: {result.placed_count}/{result.component_count}",
                 10000,
             )
@@ -267,10 +267,11 @@ class BoardWindow(QMainWindow):
                 "Авторазмещение завершено.\n\n"
                 f"Время выполнения: {result.execution_time_sec:.4f} сек\n"
                 f"Корпусов размещено: {result.placed_count} из {result.component_count}\n"
-                f"Связей между корпусами: {result.connection_count}\n"
+                f"Воздушных связей: {result.connection_count} "
+                f"(пар корпусов: {result.connection_pairs_count})\n"
                 f"Фиксированный корпус (якорь): {result.anchor_name or '—'}\n\n"
-                "Взвешенная оценка расстояний между корпусами "
-                "(не физическая длина медных дорожек):\n"
+                "Длина воздушных связей — сумма MST по падам каждой цепи "
+                "(не длина медных дорожек):\n"
                 f"  {initial_label}\n"
                 f"  {placement_label}\n"
                 f"  {local_label}\n"

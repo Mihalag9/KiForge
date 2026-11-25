@@ -9,8 +9,13 @@
 - многопоточную обработку J, R_k и F;
 - локальную оптимизацию посредством swap и relocate.
 
-total_weighted_connection_length_mm — алгоритмическая взвешенная оценка
-расстояний между корпусами, а не фактическая длина медных дорожек.
+Метрика качества — суммарная длина воздушных связей: для каждой цепи
+берутся абсолютные центры падов и вычисляется длина минимального
+связывающего дерева (MST); сумма по всем цепям даёт длину связей
+(ratsnest), а не длину медных дорожек. В отчёте (initial/after/total)
+метрика всегда евклидова; целевая функция Fmin и локальная оптимизация
+используют выбранную пользователем метрику d. Число связей равно
+сумме (P_s - 1) по цепям (полю Links legacy-файла платы).
 """
 from __future__ import annotations
 
@@ -36,61 +41,91 @@ AnchorPosition = Literal["center", "top_left"]
 ComponentPriority = Literal["max_connections", "max_size"]
 DistanceMetric = Literal["euclidean", "manhattan"]
 
+# Постоянные пулы потоков: создаются один раз и переиспользуются между
+# этапами и запусками — создание пула на каждый вызов дороже вычислений.
+_THREAD_POOL_CACHE: dict[int, ThreadPoolExecutor] = {}
+
 
 @dataclass
 class PlacementResult:
-    """Итоги размещения и значения целевой функции на разных этапах."""
+    """Итоги размещения и длины связей на разных этапах.
+
+    Все длины — суммарная длина воздушных связей: сумма длин
+    минимальных связывающих деревьев (MST) по падам каждой цепи,
+    евклидова метрика. Это длина связей (ratsnest), а не длина
+    медных дорожек.
+    """
 
     execution_time_sec: float
     component_count: int
     placed_count: int
-    connection_count: int
-    total_weighted_connection_length_mm: float
+    connection_count: int               # воздушные связи (Links)
+    total_connection_length_mm: float   # после локальной оптимизации
     placement_order: list[str]
     anchor_name: str = ""
     failed_to_place: list[str] = field(default_factory=list)
-    initial_weighted_connection_length_mm: float = 0.0
-    after_placement_weighted_connection_length_mm: float = 0.0
+    connection_pairs_count: int = 0     # пар корпусов с общими цепями
+    initial_connection_length_mm: float = 0.0
+    after_placement_connection_length_mm: float = 0.0
 
     @property
-    def after_local_optimization_weighted_connection_length_mm(self) -> float:
-        """Оценка после локальной оптимизации."""
-        return self.total_weighted_connection_length_mm
+    def after_local_optimization_connection_length_mm(self) -> float:
+        """Длина связей после локальной оптимизации."""
+        return self.total_connection_length_mm
 
     @property
     def placement_reduction_mm(self) -> float:
-        """Сокращение оценки от исходного состояния до окончания размещения."""
+        """Сокращение длины связей от исходного состояния до размещения."""
         return (
-            self.initial_weighted_connection_length_mm
-            - self.after_placement_weighted_connection_length_mm
+            self.initial_connection_length_mm
+            - self.after_placement_connection_length_mm
         )
 
     @property
     def placement_improvement_percent(self) -> float:
-        initial = self.initial_weighted_connection_length_mm
+        initial = self.initial_connection_length_mm
         if abs(initial) < 1e-12:
             return 0.0
         return self.placement_reduction_mm / initial * 100.0
 
     @property
     def local_optimization_reduction_mm(self) -> float:
-        """Сокращение оценки за счёт локальной оптимизации."""
+        """Сокращение длины связей за счёт локальной оптимизации."""
         return (
-            self.after_placement_weighted_connection_length_mm
-            - self.after_local_optimization_weighted_connection_length_mm
+            self.after_placement_connection_length_mm
+            - self.after_local_optimization_connection_length_mm
         )
 
     @property
     def local_optimization_improvement_percent(self) -> float:
-        before = self.after_placement_weighted_connection_length_mm
+        before = self.after_placement_connection_length_mm
         if abs(before) < 1e-12:
             return 0.0
         return self.local_optimization_reduction_mm / before * 100.0
 
+    # ----------------------------------------------------------------
+    # Устаревшие псевдонимы прежней версии API (значения те же).
+    # ----------------------------------------------------------------
+    @property
+    def total_weighted_connection_length_mm(self) -> float:
+        return self.total_connection_length_mm
+
+    @property
+    def initial_weighted_connection_length_mm(self) -> float:
+        return self.initial_connection_length_mm
+
+    @property
+    def after_placement_weighted_connection_length_mm(self) -> float:
+        return self.after_placement_connection_length_mm
+
+    @property
+    def after_local_optimization_weighted_connection_length_mm(self) -> float:
+        return self.total_connection_length_mm
+
     @property
     def total_wire_length_mm(self) -> float:
         """Устаревший псевдоним; значение не является длиной дорожек."""
-        return self.total_weighted_connection_length_mm
+        return self.total_connection_length_mm
 
 
 class AutoPlacer:
@@ -113,6 +148,7 @@ class AutoPlacer:
         min_clearance_mm: float = 1.0,
         max_grid_positions: int = 100_000,
         padding_mm: float | None = None,
+        relocate_window_mm: float | None = None,
     ):
         if not math.isfinite(float(grid_step_mm)) or grid_step_mm <= 0:
             raise ValueError("grid_step_mm должен быть конечным числом больше нуля")
@@ -177,6 +213,14 @@ class AutoPlacer:
         self.min_center_dist = float(min_center_dist_mm)
         self.max_search_expansions = max(1, int(max_search_expansions))
         self.chain_lambda = int(chain_lambda)
+        # Окно relocate в ЛО вокруг текущей позиции корпуса: число
+        # кандидатных позиций падает в разы, качество практически
+        # не меняется. None — поиск по всей области размещённых корпусов
+        # (прежнее поведение).
+        self.relocate_window_mm: float | None = (
+            None if relocate_window_mm is None
+            else float(relocate_window_mm)
+        )
 
         self.C = np.zeros((self.n, self.n), dtype=np.float64)
         self.nets_per_module: list[set[int]] = [set() for _ in range(self.n)]
@@ -196,6 +240,221 @@ class AutoPlacer:
             tuple[float, float, float, float] | None
         ] = [None] * self.n
         self._bbox_computed: list[bool] = [False] * self.n
+
+        # Геометрия цепей для метрики длины связей (заполняется в run()).
+        self.net_pad_offsets: dict[
+            int, list[tuple[int, tuple[float, float]]]
+        ] = {}
+        self.airwire_count: int = 0
+
+    # ------------------------------------------------------------------
+    # Геометрия цепей и метрика длины воздушных связей (MST по падам)
+    # ------------------------------------------------------------------
+    def _build_net_geometry(self) -> None:
+        """Собрать смещения падов цепей относительно origins корпусов.
+
+        net_pad_offsets[net] — список (индекс корпуса, (dx, dy)) для
+        каждого пада цепи; смещение повёрнуто и зеркально вместе с
+        корпусом. Абсолютная позиция пада = origin корпуса + смещение,
+        поэтому при перемещении корпуса достаточно сдвинуть его пады
+        на новую позицию origin.
+        """
+        self.net_pad_offsets = {}
+        for module_idx, footprint in enumerate(self.modules):
+            angle, mirrored = self._module_angle_mirrored(module_idx)
+            for pad in footprint.pads:
+                net = int(pad.net)
+                if net <= 0:
+                    continue
+                dx, dy = self._transform_point(
+                    float(pad.x), float(pad.y), angle, mirrored)
+                self.net_pad_offsets.setdefault(net, []).append(
+                    (module_idx, (dx, dy))
+                )
+        self.airwire_count = self._calculate_connection_count()
+
+    def _net_pad_points(
+        self, net: int, exclude_idx: int | None = None
+    ) -> list[tuple[float, float]]:
+        """Абсолютные точки падов цепи (все корпуса, кроме exclude_idx)."""
+        points: list[tuple[float, float]] = []
+        for module_idx, (dx, dy) in self.net_pad_offsets.get(net, ()):
+            if module_idx == exclude_idx:
+                continue
+            ox, oy = self.positions[module_idx]
+            points.append((ox + dx, oy + dy))
+        return points
+
+    def _module_net_offsets(self, idx: int, net: int) -> np.ndarray:
+        """Смещения падов корпуса idx на цепи net (массив (k, 2))."""
+        offsets = [
+            off for module_idx, off in self.net_pad_offsets.get(net, ())
+            if module_idx == idx
+        ]
+        return np.asarray(offsets, dtype=np.float64).reshape(-1, 2)
+
+    @staticmethod
+    def _mst_length(
+        points, metric: DistanceMetric = "euclidean"
+    ) -> float:
+        """Длина минимального связывающего дерева точек (Прим, O(k^2))."""
+        k = len(points)
+        if k < 2:
+            return 0.0
+        pts = [(float(p[0]), float(p[1])) for p in points]
+        if metric == "manhattan":
+            def dist(a, b):
+                return abs(a[0] - b[0]) + abs(a[1] - b[1])
+        else:
+            def dist(a, b):
+                return math.hypot(a[0] - b[0], a[1] - b[1])
+
+        in_tree = [False] * k
+        in_tree[0] = True
+        min_d = [dist(pts[0], pts[j]) for j in range(k)]
+        total = 0.0
+        for _ in range(k - 1):
+            best, best_d = -1, math.inf
+            for j in range(k):
+                if not in_tree[j] and min_d[j] < best_d:
+                    best, best_d = j, min_d[j]
+            total += best_d
+            in_tree[best] = True
+            for j in range(k):
+                if not in_tree[j]:
+                    d = dist(pts[best], pts[j])
+                    if d < min_d[j]:
+                        min_d[j] = d
+        return total
+
+    @staticmethod
+    def _mst_length_batch(
+        points_batch: np.ndarray, metric: DistanceMetric = "euclidean"
+    ) -> np.ndarray:
+        """MST-длина для батча наборов точек (n, k, 2) -> (n,).
+
+        Векторизованный алгоритм Прима: шаги дерева выполняются сразу
+        для всех наборов батча. Для k = 2 и k = 3 используются точные
+        быстрые формулы без итераций (MST двух точек — одно расстояние;
+        MST трёх точек — сумма двух меньших из трёх рёбер).
+        """
+        batch = np.asarray(points_batch, dtype=np.float64)
+        n_sets, k, _ = batch.shape
+        if k < 2:
+            return np.zeros(n_sets, dtype=np.float64)
+
+        def pair(i: int, j: int) -> np.ndarray:
+            delta = batch[:, i, :] - batch[:, j, :]
+            if metric == "manhattan":
+                return np.abs(delta).sum(axis=-1)
+            return np.hypot(delta[:, 0], delta[:, 1])
+
+        if k == 2:
+            return pair(0, 1)
+        if k == 3:
+            d01, d02, d12 = pair(0, 1), pair(0, 2), pair(1, 2)
+            return d01 + d02 + d12 - np.maximum(
+                np.maximum(d01, d02), d12
+            )
+
+        delta = batch[:, :, None, :] - batch[:, None, :, :]
+        if metric == "manhattan":
+            dist = np.abs(delta).sum(axis=-1)
+        else:
+            dist = np.hypot(delta[..., 0], delta[..., 1])
+
+        rows = np.arange(n_sets)
+        visited = np.zeros((n_sets, k), dtype=bool)
+        visited[:, 0] = True
+        min_d = dist[:, 0, :].copy()
+        total = np.zeros(n_sets, dtype=np.float64)
+        for _ in range(k - 1):
+            masked = np.where(visited, np.inf, min_d)
+            nearest = np.argmin(masked, axis=1)
+            total += masked[rows, nearest]
+            visited[rows, nearest] = True
+            min_d = np.minimum(min_d, dist[rows, nearest, :])
+        return total
+
+    def _nets_mst_sum(
+        self, nets, metric: DistanceMetric | None = None
+    ) -> float:
+        """Суммарная длина MST указанных цепей при текущих позициях."""
+        metric = metric or self.distance_metric
+        total = 0.0
+        for net in nets:
+            points = self._net_pad_points(net)
+            if len(points) >= 2:
+                total += self._mst_length(points, metric)
+        return total
+
+    def _candidate_net_mst_values(
+        self,
+        idx: int,
+        candidates: np.ndarray,
+        metric: DistanceMetric | None = None,
+    ) -> np.ndarray:
+        """Значения F для кандидатных позиций корпуса idx.
+
+        Для каждой цепи корпуса к падам остальных корпусов добавляются
+        пады кандидата в проверяемой позиции; длина MST такой цепи
+        суммируется по всем цепям корпуса. Меньшее значение — меньшая
+        длина воздушных связей платы. Цепи без падов на других корпусах
+        пропускаются: их MST не зависит от позиции кандидата.
+        """
+        candidates = np.asarray(candidates, dtype=np.float64)
+        values = np.zeros(len(candidates), dtype=np.float64)
+        if not len(candidates):
+            return values
+        metric = metric or self.distance_metric
+
+        for net in self.nets_per_module[idx]:
+            offsets = self._module_net_offsets(idx, net)
+            fixed = np.asarray(
+                self._net_pad_points(net, exclude_idx=idx),
+                dtype=np.float64,
+            ).reshape(-1, 2)
+            m = len(fixed)
+            k = m + len(offsets)
+            if k < 2 or m == 0:
+                continue
+
+            # Ограничение памяти: матрица расстояний (chunk, k, k).
+            chunk_size = max(1, int(1_000_000 // max(1, k * k)))
+            for start in range(0, len(candidates), chunk_size):
+                part = candidates[start:start + chunk_size]
+                cand_pts = part[:, None, :] + offsets[None, :, :]
+                pts = np.concatenate(
+                    (
+                        np.broadcast_to(fixed, (len(part), m, 2)),
+                        cand_pts,
+                    ),
+                    axis=1,
+                )
+                values[start:start + chunk_size] += self._mst_length_batch(
+                    pts, metric
+                )
+        return values
+
+    def _calculate_total_connection_length(
+        self, metric: DistanceMetric | None = None
+    ) -> float:
+        """Суммарная длина воздушных связей: сумма MST всех цепей по падам.
+
+        Для каждой цепи берутся абсолютные центры падов всех корпусов и
+        считается длина минимального связывающего дерева. Отчётная метрика
+        всегда евклидова (metric=None); это длина связей (ratsnest),
+        а не длина медных дорожек.
+        """
+        if self.n < 2:
+            return 0.0
+        metric = metric or "euclidean"
+        total = 0.0
+        for net in self.net_pad_offsets:
+            points = self._net_pad_points(net)
+            if len(points) >= 2:
+                total += self._mst_length(points, metric)
+        return total
 
     # ------------------------------------------------------------------
     # Матрица связности R — формула (3.3.2)
@@ -620,8 +879,7 @@ class AutoPlacer:
         if self.max_workers == 1 or len(indices) < 32 or len(tasks) < 2:
             parts = [self._calculate_J_chunk(task) for task in tasks]
         else:
-            with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-                parts = list(pool.map(self._calculate_J_chunk, tasks))
+            parts = list(self._shared_pool().map(self._calculate_J_chunk, tasks))
 
         return (
             np.concatenate(parts)
@@ -788,9 +1046,9 @@ class AutoPlacer:
         if self.max_workers == 1 or len(tasks) < 2:
             parts = [self._filter_candidate_chunk(task) for task in tasks]
         else:
-            worker_count = min(self.max_workers, len(tasks))
-            with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                parts = list(pool.map(self._filter_candidate_chunk, tasks))
+            parts = list(
+                self._shared_pool().map(self._filter_candidate_chunk, tasks)
+            )
 
         non_empty = [part for part in parts if len(part)]
         if not non_empty:
@@ -884,51 +1142,14 @@ class AutoPlacer:
             return np.abs(delta).sum(axis=-1)
         return np.linalg.norm(delta, axis=-1)
 
-    @staticmethod
-    def _calculate_F_chunk(args) -> np.ndarray:
-        candidates, placed_positions, weights, distance_metric = args
-        distances = AutoPlacer._distance_values(
-            candidates[:, None, :],
-            placed_positions[None, :, :],
-            distance_metric,
-        )
-        return np.dot(distances, weights)
-
     def _find_best_position(
         self, chosen_idx: int, candidates: np.ndarray
     ) -> tuple[float, float] | None:
+        """Выбрать позицию с минимальной длиной MST цепей корпуса."""
         if len(candidates) == 0:
             return None
 
-        placed_positions = np.asarray(
-            [self.positions[i] for i in self.placed_indices],
-            dtype=np.float64,
-        )
-        weights = self.C[chosen_idx, self.placed_indices]
-
-        if len(candidates) < 64 or self.max_workers == 1:
-            values = self._calculate_F_chunk((
-                candidates,
-                placed_positions,
-                weights,
-                self.distance_metric,
-            ))
-        else:
-            chunks = [
-                part for part in np.array_split(
-                    candidates,
-                    min(self.max_workers, len(candidates)),
-                )
-                if len(part)
-            ]
-            tasks = [
-                (part, placed_positions, weights, self.distance_metric)
-                for part in chunks
-            ]
-            with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
-                values = np.concatenate(
-                    list(pool.map(self._calculate_F_chunk, tasks))
-                )
+        values = self._evaluate_candidates_values(chosen_idx, candidates)
 
         if not len(values):
             return None
@@ -939,6 +1160,50 @@ class AutoPlacer:
             float(candidates[best_index, 0]),
             float(candidates[best_index, 1]),
         )
+
+    def _evaluate_candidates_values(
+        self, idx: int, candidates: np.ndarray
+    ) -> np.ndarray:
+        """Значения F для всех кандидатов, при возможности параллельно.
+
+        Пул потоков создаётся один раз на всё размещение и используется
+        и в основном этапе, и в локальной оптимизации: создание нового
+        пула на каждый вызов обходится дороже самих вычислений.
+        """
+        candidates = np.asarray(candidates, dtype=np.float64)
+        if not len(candidates):
+            return np.empty(0, dtype=np.float64)
+
+        if len(candidates) < 256 or self.max_workers == 1:
+            return self._candidate_net_mst_values(idx, candidates)
+
+        pool = self._shared_pool()
+        chunks = [
+            part for part in np.array_split(
+                candidates,
+                min(self.max_workers, len(candidates)),
+            )
+            if len(part)
+        ]
+        tasks = [(idx, part, self.distance_metric) for part in chunks]
+        parts = list(pool.map(self._candidate_net_mst_values_task, tasks))
+        return (
+            np.concatenate(parts)
+            if parts else np.empty(0, dtype=np.float64)
+        )
+
+    def _shared_pool(self) -> ThreadPoolExecutor:
+        """Постоянный пул потоков, общий для всех этапов размещения."""
+        pool = _THREAD_POOL_CACHE.get(self.max_workers)
+        if pool is None:
+            pool = ThreadPoolExecutor(max_workers=self.max_workers)
+            _THREAD_POOL_CACHE[self.max_workers] = pool
+        return pool
+
+    def _candidate_net_mst_values_task(self, args) -> np.ndarray:
+        """Обёртка для параллельного вычисления F по блоку кандидатов."""
+        idx, candidates, metric = args
+        return self._candidate_net_mst_values(idx, candidates, metric)
 
     # ------------------------------------------------------------------
     # Фиксация размещения и метрики
@@ -956,13 +1221,29 @@ class AutoPlacer:
             self.placement_order.append(self.modules[idx].name)
 
     def _calculate_connection_count(self) -> int:
+        """Количество воздушных связей: сумма (P_s - 1) по цепям с P_s >= 2.
+
+        Равняется числу звеньев ratsnest (полю Links в legacy-файле платы)
+        и числу рёбер суммы MST по всем цепям.
+        """
+        return int(sum(
+            len(pads) - 1
+            for pads in self.net_pad_offsets.values()
+            if len(pads) >= 2
+        ))
+
+    def _calculate_connection_pairs_count(self) -> int:
         """Количество пар корпусов с хотя бы одной общей цепью."""
         if self.n < 2:
             return 0
         return int(np.count_nonzero(np.triu(self.C > 0.0, k=1)))
 
-    def _calculate_total_weighted_connection_length(self) -> float:
-        """Сумма r_ij * d_ij; не является длиной физических дорожек."""
+    def _calculate_total_weighted_origin_distance(self) -> float:
+        """Старая взвешенная оценка Σ r_ij * d_ij между origins корпусов.
+
+        Оставлена для диагностики; в результатах размещения и в целевой
+        функции не используется (не является длиной связей платы).
+        """
         if self.n < 2:
             return 0.0
 
@@ -978,40 +1259,26 @@ class AutoPlacer:
         )
         return float(np.dot(distances, self.C[rows, cols]))
 
-    def _calculate_total_wire_length(self) -> float:
-        """Совместимый псевдоним старого имени метрики."""
-        return self._calculate_total_weighted_connection_length()
-
-    def _wire_contribution(self, idx: int) -> float:
-        """Локальный вклад корпуса в общую взвешенную оценку."""
-        if idx < 0 or idx >= self.n:
-            return 0.0
-
-        row = self.C[idx]
-        mask = row > 0
-        if not mask.any():
-            return 0.0
-
-        positions = np.asarray(self.positions, dtype=np.float64)
-        distances = self._distance_values(
-            positions[mask],
-            positions[idx],
-            self.distance_metric,
-        )
-        return float(np.dot(row[mask], distances))
-
     # ------------------------------------------------------------------
     # Локальная оптимизация
     # ------------------------------------------------------------------
     def _try_swap(self, i: int, j: int) -> bool:
-        """Попытаться обменять позиции двух корпусов."""
+        """Попытаться обменять позиции двух корпусов.
+
+        Сравнивается суммарная длина MST цепей, затронутых обоими
+        корпусами, до и после обмена.
+        """
         if i in self.fixed_indices or j in self.fixed_indices:
             return False
 
+        affected = set(self.nets_per_module[i]) | set(self.nets_per_module[j])
+        if not affected:
+            return False
+
+        old_value = self._nets_mst_sum(affected)
+
         old_i = self.positions[i]
         old_j = self.positions[j]
-        old_value = self._wire_contribution(i) + self._wire_contribution(j)
-
         self.positions[i], self.positions[j] = old_j, old_i
         self.modules[i].po_x, self.modules[i].po_y = old_j
         self.modules[j].po_x, self.modules[j].po_y = old_i
@@ -1024,8 +1291,7 @@ class AutoPlacer:
             )
 
         new_value = (
-            self._wire_contribution(i) + self._wire_contribution(j)
-            if valid else math.inf
+            self._nets_mst_sum(affected) if valid else math.inf
         )
 
         if valid and new_value < old_value - 0.01:
@@ -1037,34 +1303,24 @@ class AutoPlacer:
         return False
 
     def _try_relocate(self, idx: int) -> bool:
-        """Попытаться переместить корпус в позицию с меньшей оценкой F."""
+        """Попытаться переместить корпус в позицию с меньшей длиной MST.
+
+        Кандидаты оцениваются суммой длин MST цепей корпуса; позиции
+        фильтруются на пересечения с остальными корпусами.
+        """
         if idx in self.fixed_indices:
             return False
+        if not self.nets_per_module[idx]:
+            return False
+
+        old_value = self._nets_mst_sum(self.nets_per_module[idx])
+        best_value = old_value
+        best_position: tuple[float, float] | None = None
 
         saved_placed = list(self.placed_indices)
         self.placed_indices = [i for i in saved_placed if i != idx]
-        if not self.placed_indices:
-            self.placed_indices = saved_placed
-            return False
-
-        placed_positions = np.asarray(
-            [self.positions[i] for i in self.placed_indices],
-            dtype=np.float64,
-        )
-        weights = np.asarray(
-            [self.C[idx, i] for i in self.placed_indices],
-            dtype=np.float64,
-        )
-        old_position = np.asarray(self.positions[idx], dtype=np.float64)
-        old_distances = self._distance_values(
-            placed_positions,
-            old_position,
-            self.distance_metric,
-        )
-        best_value = float(np.dot(old_distances, weights))
-        best_position: tuple[float, float] | None = None
-
         try:
+            x0, y0 = self.positions[idx]
             for grid_div in (1, 2):
                 for attempt in range(2):
                     candidates = self._generate_candidates(
@@ -1073,15 +1329,17 @@ class AutoPlacer:
                         check_overlap=True,
                         grid_step=self.grid_step / grid_div,
                     )
+                    if len(candidates) and self.relocate_window_mm is not None:
+                        half = self.relocate_window_mm * (1 + attempt)
+                        mask = (
+                            (np.abs(candidates[:, 0] - x0) <= half)
+                            & (np.abs(candidates[:, 1] - y0) <= half)
+                        )
+                        candidates = candidates[mask]
                     if not len(candidates):
                         continue
 
-                    distances = self._distance_values(
-                        candidates[:, None, :],
-                        placed_positions[None, :, :],
-                        self.distance_metric,
-                    )
-                    values = np.dot(distances, weights)
+                    values = self._evaluate_candidates_values(idx, candidates)
                     candidate_index = int(np.argmin(values))
                     value = float(values[candidate_index])
 
@@ -1179,12 +1437,13 @@ class AutoPlacer:
                 component_count=0,
                 placed_count=0,
                 connection_count=0,
-                total_weighted_connection_length_mm=0.0,
+                total_connection_length_mm=0.0,
                 placement_order=[],
             )
 
         self._build_connectivity_matrix()
-        initial_length = self._calculate_total_weighted_connection_length()
+        self._build_net_geometry()
+        initial_length = self._calculate_total_connection_length()
         self._place_anchor()
 
         anchor_name = ""
@@ -1198,11 +1457,11 @@ class AutoPlacer:
                 component_count=1,
                 placed_count=1,
                 connection_count=0,
-                total_weighted_connection_length_mm=0.0,
+                total_connection_length_mm=0.0,
                 placement_order=list(self.placement_order),
                 anchor_name=anchor_name,
-                initial_weighted_connection_length_mm=initial_length,
-                after_placement_weighted_connection_length_mm=0.0,
+                initial_connection_length_mm=initial_length,
+                after_placement_connection_length_mm=0.0,
             )
 
         pending: list[int] = []
@@ -1282,14 +1541,13 @@ class AutoPlacer:
             self.failed_to_place.append(self.modules[idx].name)
 
         # Замер после последовательного этапа, до локальной оптимизации.
-        after_placement_length = (
-            self._calculate_total_weighted_connection_length()
-        )
+        after_placement_length = self._calculate_total_connection_length()
 
-        # ЛО выполняется отдельной фазой и использует ту же выбранную метрику d.
+        # ЛО выполняется отдельной фазой и использует ту же выбранную
+        # метрику d внутри MST каждой цепи.
         self._iterative_improve(max_passes=5)
         after_local_optimization_length = (
-            self._calculate_total_weighted_connection_length()
+            self._calculate_total_connection_length()
         )
 
         elapsed = time.perf_counter() - started
@@ -1297,13 +1555,14 @@ class AutoPlacer:
             execution_time_sec=elapsed,
             component_count=self.n,
             placed_count=len(self.placed_indices),
-            connection_count=self._calculate_connection_count(),
-            total_weighted_connection_length_mm=after_local_optimization_length,
+            connection_count=self.airwire_count,
+            connection_pairs_count=self._calculate_connection_pairs_count(),
+            total_connection_length_mm=after_local_optimization_length,
             placement_order=list(self.placement_order),
             anchor_name=anchor_name,
             failed_to_place=list(self.failed_to_place),
-            initial_weighted_connection_length_mm=initial_length,
-            after_placement_weighted_connection_length_mm=after_placement_length,
+            initial_connection_length_mm=initial_length,
+            after_placement_connection_length_mm=after_placement_length,
         )
 
 
@@ -1322,6 +1581,7 @@ def auto_place_board(
     board_margin_mm: float = 5.0,
     min_clearance_mm: float = 1.0,
     max_grid_positions: int = 100_000,
+    relocate_window_mm: float | None = None,
 ) -> PlacementResult:
     """Публичная обёртка над AutoPlacer.run()."""
     return AutoPlacer(
@@ -1339,4 +1599,5 @@ def auto_place_board(
         board_margin_mm=board_margin_mm,
         min_clearance_mm=min_clearance_mm,
         max_grid_positions=max_grid_positions,
+        relocate_window_mm=relocate_window_mm,
     ).run()
