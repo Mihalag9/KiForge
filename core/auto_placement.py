@@ -45,6 +45,10 @@ DistanceMetric = Literal["euclidean", "manhattan"]
 # этапами и запусками — создание пула на каждый вызов дороже вычислений.
 _THREAD_POOL_CACHE: dict[int, ThreadPoolExecutor] = {}
 
+# Целевой размер чанка в элементах матрицы расстояний (chunk, k, k).
+# Влияет только на скорость/память: пады независимы между кандидатами.
+_MST_CHUNK_ELEMS = 250_000
+
 
 @dataclass
 class PlacementResult:
@@ -357,11 +361,18 @@ class AutoPlacer:
                 np.maximum(d01, d02), d12
             )
 
-        delta = batch[:, :, None, :] - batch[:, None, :, :]
+        dx = batch[:, :, None, 0] - batch[:, None, :, 0]
+        dy = batch[:, :, None, 1] - batch[:, None, :, 1]
         if metric == "manhattan":
-            dist = np.abs(delta).sum(axis=-1)
+            np.abs(dx, out=dx)
+            np.abs(dy, out=dy)
+            dist = dx
+            dist += dy
         else:
-            dist = np.hypot(delta[..., 0], delta[..., 1])
+            # гипотенуза прямо в буфер dx — без промежуточного
+            # массива (n, k, k, 2); значения идентичны прежним
+            np.hypot(dx, dy, out=dx)
+            dist = dx
 
         rows = np.arange(n_sets)
         visited = np.zeros((n_sets, k), dtype=bool)
@@ -401,6 +412,12 @@ class AutoPlacer:
         суммируется по всем цепям корпуса. Меньшее значение — меньшая
         длина воздушных связей платы. Цепи без падов на других корпусах
         пропускаются: их MST не зависит от позиции кандидата.
+
+        При нескольких потоках задачи делятся по цепям: каждый поток
+        обрабатывает всех кандидатов одной цепи крупными массивами,
+        поэтому numpy чаще отпускает GIL и потоки дают реальное
+        ускорение. Сумма накапливается в порядке цепей — значения
+        совпадают с последовательным вариантом бит в бит.
         """
         candidates = np.asarray(candidates, dtype=np.float64)
         values = np.zeros(len(candidates), dtype=np.float64)
@@ -408,6 +425,7 @@ class AutoPlacer:
             return values
         metric = metric or self.distance_metric
 
+        net_tasks = []
         for net in self.nets_per_module[idx]:
             offsets = self._module_net_offsets(idx, net)
             fixed = np.asarray(
@@ -418,23 +436,61 @@ class AutoPlacer:
             k = m + len(offsets)
             if k < 2 or m == 0:
                 continue
+            net_tasks.append((offsets, fixed))
 
-            # Ограничение памяти: матрица расстояний (chunk, k, k).
-            chunk_size = max(1, int(1_000_000 // max(1, k * k)))
-            for start in range(0, len(candidates), chunk_size):
-                part = candidates[start:start + chunk_size]
-                cand_pts = part[:, None, :] + offsets[None, :, :]
-                pts = np.concatenate(
-                    (
-                        np.broadcast_to(fixed, (len(part), m, 2)),
-                        cand_pts,
-                    ),
-                    axis=1,
-                )
-                values[start:start + chunk_size] += self._mst_length_batch(
-                    pts, metric
-                )
+        if not net_tasks:
+            return values
+
+        if self.max_workers > 1 and len(net_tasks) >= 2 and len(candidates) >= 512:
+            pool = self._shared_pool()
+            vectors = list(pool.map(
+                self._net_mst_vector_task,
+                [
+                    (offsets, fixed, candidates, metric)
+                    for offsets, fixed in net_tasks
+                ],
+            ))
+            for vector in vectors:
+                values += vector
+            return values
+
+        for offsets, fixed in net_tasks:
+            values += self._net_mst_vector(
+                candidates, offsets, fixed, metric
+            )
         return values
+
+    def _net_mst_vector(
+        self,
+        candidates: np.ndarray,
+        offsets: np.ndarray,
+        fixed: np.ndarray,
+        metric: DistanceMetric,
+    ) -> np.ndarray:
+        """MST-вектор одной цепи по всем кандидатам (чанки по памяти)."""
+        m = len(fixed)
+        k = m + len(offsets)
+        result = np.empty(len(candidates), dtype=np.float64)
+        chunk_size = max(1, int(_MST_CHUNK_ELEMS // max(1, k * k)))
+        for start in range(0, len(candidates), chunk_size):
+            part = candidates[start:start + chunk_size]
+            cand_pts = part[:, None, :] + offsets[None, :, :]
+            pts = np.concatenate(
+                (
+                    np.broadcast_to(fixed, (len(part), m, 2)),
+                    cand_pts,
+                ),
+                axis=1,
+            )
+            result[start:start + chunk_size] = self._mst_length_batch(
+                pts, metric
+            )
+        return result
+
+    def _net_mst_vector_task(self, args) -> np.ndarray:
+        """Обёртка для параллельного расчёта MST-вектора одной цепи."""
+        offsets, fixed, candidates, metric = args
+        return self._net_mst_vector(candidates, offsets, fixed, metric)
 
     def _calculate_total_connection_length(
         self, metric: DistanceMetric | None = None
@@ -1030,7 +1086,17 @@ class AutoPlacer:
             dtype=np.float64,
         )
 
-        chunk_size = 512
+        # Крупные чанки — меньше накладных расходов на задачи; при
+        # нескольких потоках делим так, чтобы задач было не меньше,
+        # чем workers. Порядок кандидатов внутри чанков сохраняется,
+        # результат не зависит от размера чанка.
+        chunk_size = max(
+            512,
+            min(
+                4096,
+                -(-len(candidates) // max(1, self.max_workers)),
+            ),
+        )
         tasks = [
             (
                 candidates[start:start + chunk_size],
@@ -1164,33 +1230,16 @@ class AutoPlacer:
     def _evaluate_candidates_values(
         self, idx: int, candidates: np.ndarray
     ) -> np.ndarray:
-        """Значения F для всех кандидатов, при возможности параллельно.
+        """Значения F для всех кандидатов.
 
-        Пул потоков создаётся один раз на всё размещение и используется
-        и в основном этапе, и в локальной оптимизации: создание нового
-        пула на каждый вызов обходится дороже самих вычислений.
+        Параллелизм выполняется внутри _candidate_net_mst_values
+        (по цепям). Пул потоков создаётся один раз на всё размещение
+        и используется и в основном этапе, и в локальной оптимизации.
         """
         candidates = np.asarray(candidates, dtype=np.float64)
         if not len(candidates):
             return np.empty(0, dtype=np.float64)
-
-        if len(candidates) < 256 or self.max_workers == 1:
-            return self._candidate_net_mst_values(idx, candidates)
-
-        pool = self._shared_pool()
-        chunks = [
-            part for part in np.array_split(
-                candidates,
-                min(self.max_workers, len(candidates)),
-            )
-            if len(part)
-        ]
-        tasks = [(idx, part, self.distance_metric) for part in chunks]
-        parts = list(pool.map(self._candidate_net_mst_values_task, tasks))
-        return (
-            np.concatenate(parts)
-            if parts else np.empty(0, dtype=np.float64)
-        )
+        return self._candidate_net_mst_values(idx, candidates)
 
     def _shared_pool(self) -> ThreadPoolExecutor:
         """Постоянный пул потоков, общий для всех этапов размещения."""
@@ -1199,11 +1248,6 @@ class AutoPlacer:
             pool = ThreadPoolExecutor(max_workers=self.max_workers)
             _THREAD_POOL_CACHE[self.max_workers] = pool
         return pool
-
-    def _candidate_net_mst_values_task(self, args) -> np.ndarray:
-        """Обёртка для параллельного вычисления F по блоку кандидатов."""
-        idx, candidates, metric = args
-        return self._candidate_net_mst_values(idx, candidates, metric)
 
     # ------------------------------------------------------------------
     # Фиксация размещения и метрики
@@ -1313,14 +1357,21 @@ class AutoPlacer:
         if not self.nets_per_module[idx]:
             return False
 
-        old_value = self._nets_mst_sum(self.nets_per_module[idx])
+        x0, y0 = self.positions[idx]
+        # Текущее значение той же функции F, что и у кандидатов: сети без
+        # падов на других корпусах не учитываются ни для текущей позиции,
+        # ни для кандидатов. Иначе порог улучшения смещается на константу
+        # (MST внутримодульных сетей) и ЛО может принять переход в
+        # позицию хуже текущей.
+        old_value = float(self._candidate_net_mst_values(
+            idx, np.asarray([[x0, y0]], dtype=np.float64),
+        )[0])
         best_value = old_value
         best_position: tuple[float, float] | None = None
 
         saved_placed = list(self.placed_indices)
         self.placed_indices = [i for i in saved_placed if i != idx]
         try:
-            x0, y0 = self.positions[idx]
             for grid_div in (1, 2):
                 for attempt in range(2):
                     candidates = self._generate_candidates(

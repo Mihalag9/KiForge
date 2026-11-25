@@ -144,6 +144,22 @@ class AutoPlacementSettingsDialog(QDialog):
         )
         form.addRow("Количество потоков:", self.workers_spin)
 
+        self.relocate_window_spin = QDoubleSpinBox()
+        self.relocate_window_spin.setRange(0.0, 200.0)
+        self.relocate_window_spin.setDecimals(1)
+        self.relocate_window_spin.setSingleStep(5.0)
+        self.relocate_window_spin.setValue(0.0)
+        self.relocate_window_spin.setSuffix(" мм")
+        self.relocate_window_spin.setToolTip(
+            "Окно relocate в ЛО вокруг текущей позиции корпуса: "
+            "кандидатные позиции ищутся только в квадрате с этой стороной. "
+            "0 — поиск по всей области размещённых корпусов (медленнее, "
+            "качество то же или выше). Ограничение окна ускоряет ЛО "
+            "в несколько раз при почти неизменном качестве."
+        )
+        form.addRow("Окно relocate (0 — вся область):",
+                    self.relocate_window_spin)
+
         criterion_help = QLabel(
             "Веса цепей рассчитываются автоматически: ωₛ = Pₛ / Pср, "
             "где Pₛ — количество контактных площадок цепи, Pср — среднее "
@@ -185,4 +201,8 @@ class AutoPlacementSettingsDialog(QDialog):
             "grid_step_mm": self.grid_step_spin.value(),
             "max_grid_positions": self.max_grid_spin.value(),
             "max_workers": self.workers_spin.value(),
+            "relocate_window_mm": (
+                self.relocate_window_spin.value()
+                if self.relocate_window_spin.value() > 0.0 else None
+            ),
         }
